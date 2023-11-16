@@ -1,0 +1,35 @@
+.matchblock {
+    display: flex;
+    flex-direction: column;
+    align-items: stretch;
+    padding: 6px 6px 8px 6px;
+    justify-content: center;
+    height: 100%;
+    box-sizing: border-box;
+}
+
+.matchblockinner {
+    box-shadow: #777 1px 1px 4px 0px;
+    border-radius: 3px;
+}
+
+.matchblockinner > div {
+    padding: 5px 10px;
+}
+
+.matchblockinner > div:nth-child(2) {
+    border-top: 1px solid #BBB;
+}
+
+.matchparticipant {
+    display: flex;
+    flex-direction: row;
+    align-items: center;
+    justify-content: space-between;
+    line-height: 1.5;
+}
+
+.matchparticipant.winner {
+    font-weight: bold;
+    background-color: rgb(70, 252, 197);
+}
