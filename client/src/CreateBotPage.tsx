@@ -1,4 +1,5 @@
-import React, { useEffect } from 'react';
+import React, { useCallback, useEffect } from 'react';
+import { Editor, SupportedLanguage } from './Editor.tsx';
 
 function CreateBotPage(props: {setTitle: (title: string) => void}) {
     const { setTitle } = props
@@ -7,9 +8,13 @@ function CreateBotPage(props: {setTitle: (title: string) => void}) {
         setTitle('Create Bot')
     }, [])
 
+    const onEdit = useCallback(() => {
+        console.log('edited')
+    }, [])
+
     return <div>
         <h1>Create Bot</h1>
-        <p>Under construction...</p>
+        <Editor language={SupportedLanguage.PYTHON} initialContent="print('Hello')" onEdit={onEdit}/>
     </div>
 }
 

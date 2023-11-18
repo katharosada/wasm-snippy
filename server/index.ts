@@ -282,6 +282,8 @@ app.post('/api/tournament', async (req: Request, res: Response) => {
             io.to('tournament').emit('match', nextMatch);
         }
     }
+    // Publish at the end for anyone who missed the first message.
+    io.to('tournament').emit('tournament', matches);
 });
 
 app.get('/api/bots', async (req: Request, res: Response) => {
