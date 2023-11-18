@@ -1,5 +1,5 @@
 import React, { useCallback, useEffect } from 'react';
-import { Editor, SupportedLanguage } from './Editor.tsx';
+import { Editor, SupportedLanguage } from './Editor';
 
 function CreateBotPage(props: {setTitle: (title: string) => void}) {
     const { setTitle } = props

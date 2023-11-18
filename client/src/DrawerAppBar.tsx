@@ -30,7 +30,7 @@ const Link = React.forwardRef<HTMLAnchorElement, RouterLinkProps>(function Link(
   }}role={undefined} />;
 });
 
-export default function DrawerAppBar(props) {
+export default function DrawerAppBar(props: {title: string}) {
   const [mobileOpen, setMobileOpen] = React.useState(false);
   const { title } = props
 

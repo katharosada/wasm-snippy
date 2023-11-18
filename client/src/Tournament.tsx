@@ -2,9 +2,25 @@ import { SingleEliminationBracket } from '@g-loot/react-tournament-brackets';
 import CircularProgress from '@mui/material/CircularProgress';
 
 import "./Tournament.css"
+import { StringLiteral } from 'typescript';
 
+export interface Party {
+    id: number | string,
+    name?: string,
+    isWinner?: boolean,
+    resultText?: string | null,
+}
 
-export const MatchParticipant = (props) => {
+export interface Match {
+    id: number | string,
+    nextMatchId: number | string | null,
+    startTime: string,
+    state: string,
+    participants: Party[]
+}
+  
+  
+export const MatchParticipant = (props: {party: Party, inProgress: boolean}) => {
     const {party} = props;
     const resultText = Array.isArray(party.resultText) ? party.resultText : [];
     return <div className={"matchparticipant" + (party.isWinner ? ' winner' : '')}>
@@ -18,17 +34,17 @@ export const MatchParticipant = (props) => {
     </div>
 };
 
-export const Match = (props) => {
-    const match = props.match;
+export const Match = (props: {match: Match, topParty: Party, bottomParty: Party}) => {
+    const {match, topParty, bottomParty} = props;
     return <div className="matchblock">
         <div className="matchblockinner">
-            <MatchParticipant party={props.topParty} inProgress={match.state === 'IN_PROGRESS'}/>
-            { props.bottomParty.name ? <MatchParticipant party={props.bottomParty} inProgress={match.state === 'IN_PROGRESS'}/> : null}
+            <MatchParticipant party={topParty} inProgress={match.state === 'IN_PROGRESS'}/>
+            { bottomParty.name ? <MatchParticipant party={bottomParty} inProgress={match.state === 'IN_PROGRESS'}/> : null}
         </div>
     </div>
 }
 
-export const Tournament = (props) => {
+export const Tournament = (props: {matches: Match[]}) => {
 
     if (!props.matches) {
         return <div>No tournament running.</div>

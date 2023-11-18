@@ -1,10 +1,10 @@
 import './App.css';
 import React, { useState } from 'react';
-import DrawerAppBar from './DrawerAppBar.tsx';
+import DrawerAppBar from './DrawerAppBar';
 import { Route, Routes } from 'react-router-dom';
-import LiveTournamentPage from './LiveTournamentPage.tsx';
-import CreateBotPage from './CreateBotPage.tsx';
-import LeaderboardPage from './LeaderboardPage.tsx';
+import LiveTournamentPage from './LiveTournamentPage';
+import CreateBotPage from './CreateBotPage';
+import LeaderboardPage from './LeaderboardPage';
 
 function App() {
   const [title, setTitle] = useState('')

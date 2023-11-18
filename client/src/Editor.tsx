@@ -1,7 +1,6 @@
 import { useRef, useState, useEffect } from 'react';
 import * as monaco from 'monaco-editor/esm/vs/editor/editor.api';
-import React from 'react';
-
+import './monacoWorkers';
 import './Editor.css';
 
 export enum SupportedLanguage {

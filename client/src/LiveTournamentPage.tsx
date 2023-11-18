@@ -1,7 +1,6 @@
 import './App.css';
 import { useState, useEffect, useCallback } from 'react';
-import { Tournament } from './Tournament';
-import React from 'react';
+import { Match, Tournament } from './Tournament';
 
 import {io} from "socket.io-client";
 
@@ -26,7 +25,7 @@ function LiveTournamentPage(props: {setTitle: (title: string) => void}) {
     });
 
     socket.on('match', (match) => {
-      setMatches((matches) => {
+      setMatches((matches: Match[]) => {
         if (!matches) {
           return null
         }
