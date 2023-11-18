@@ -1,0 +1,38 @@
+{
+    "root": true,
+    "parser": "@typescript-eslint/parser",
+    "parserOptions": {
+      "ecmaVersion": 2022,
+      "sourceType": "module",
+      "ecmaFeatures": {
+        "jsx": true
+      }
+    },
+    "settings": {
+      "react": {
+        "version": "detect"
+      }
+    },
+    "extends": [
+      "plugin:react/recommended",
+      "plugin:@typescript-eslint/recommended",
+      "plugin:prettier/recommended"
+    ],
+    "plugins": ["unused-imports", "sort-imports-es6-autofix", "import"],
+    "rules": {
+      "@typescript-eslint/no-unused-vars": ["error", { "vars": "all", "args": "none", "ignoreRestSiblings": false }],
+      "@typescript-eslint/no-empty-interface": ["off"],
+      "@typescript-eslint/no-explicit-any": ["off"],
+      "@typescript-eslint/ban-ts-comment": ["off"],
+      "@typescript-eslint/no-empty-function": ["off"],
+      "import/no-duplicates": ["error"],
+      "react/react-in-jsx-scope": ["off"],
+      "unused-imports/no-unused-imports": "error",
+      "sort-imports-es6-autofix/sort-imports-es6": ["error", {
+        "ignoreCase": false,
+        "ignoreMemberSort": false,
+        "memberSyntaxSortOrder": ["none", "all", "single", "multiple"]
+      }]
+    },
+    "ignorePatterns": ["node_modules/", "build/", "dist/", "**/*.css"]
+  }

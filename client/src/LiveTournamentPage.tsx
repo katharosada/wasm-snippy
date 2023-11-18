@@ -1,11 +1,10 @@
-import './App.css';
-import { useState, useEffect, useCallback } from 'react';
-import { Match, Tournament } from './Tournament';
+import './App.css'
+import { Match, Tournament } from './Tournament'
+import { useCallback, useEffect, useState } from 'react'
 
-import {io} from "socket.io-client";
+import { io } from 'socket.io-client'
 
-
-function LiveTournamentPage(props: {setTitle: (title: string) => void}) {
+function LiveTournamentPage(props: { setTitle: (title: string) => void }) {
   const { setTitle } = props
   const [matches, setMatches] = useState(null as any)
 
@@ -14,15 +13,15 @@ function LiveTournamentPage(props: {setTitle: (title: string) => void}) {
   }, [])
 
   useEffect(() => {
-    const socket = io();
+    const socket = io()
 
     socket.on('connect', () => {
       console.log('connected')
-    });
+    })
 
     socket.on('tournament', (data) => {
       setMatches(data)
-    });
+    })
 
     socket.on('match', (match) => {
       setMatches((matches: Match[]) => {
@@ -37,31 +36,33 @@ function LiveTournamentPage(props: {setTitle: (title: string) => void}) {
         })
         return newMatches
       })
-    });
+    })
 
     return () => {
-      socket.disconnect();
+      socket.disconnect()
     }
   }, [])
 
   const runMatches = useCallback(() => {
-    fetch('/api/tournament', {method: 'POST'}).then((response) => {
-      if (!response.ok) {
-        throw new Error(`HTTP error! status: ${response.status}`);
-      }
-      return response.json();
-    }).then((json) => {
-      console.log(json)
-    });
+    fetch('/api/tournament', { method: 'POST' })
+      .then((response) => {
+        if (!response.ok) {
+          throw new Error(`HTTP error! status: ${response.status}`)
+        }
+        return response.json()
+      })
+      .then((json) => {
+        console.log(json)
+      })
   }, [])
 
   return (
     <div>
       <h1>Tournament</h1>
       <button onClick={runMatches}>Run matches</button>
-      <Tournament matches={matches}/>
+      <Tournament matches={matches} />
     </div>
-  );
+  )
 }
 
-export default LiveTournamentPage;
+export default LiveTournamentPage
