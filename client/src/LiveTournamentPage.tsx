@@ -1,28 +1,20 @@
 import './App.css';
 import { useState, useEffect, useCallback } from 'react';
 import { Tournament } from './Tournament';
+import React from 'react';
 
 import {io} from "socket.io-client";
 
-async function fetchBotList() {
-  // use fetch to get json data from //api/bots
-  const response = await fetch('/api/bots');
-  if (!response.ok) {
-    throw new Error(`HTTP error! status: ${response.status}`);
-  }
-  const json = await response.json();
-  return json;
-}
 
-
-function App() {
-  const [botList, setBotList] = useState([])
-  const [matches, setMatches] = useState(null)
+function LiveTournamentPage(props: {setTitle: (title: string) => void}) {
+  const { setTitle } = props
+  const [matches, setMatches] = useState(null as any)
 
   useEffect(() => {
-    // fetch bots and put list in state
-    fetchBotList().then((list) => setBotList(list))
+    setTitle('Tournament')
+  }, [])
 
+  useEffect(() => {
     const socket = io();
 
     socket.on('connect', () => {
@@ -35,6 +27,9 @@ function App() {
 
     socket.on('match', (match) => {
       setMatches((matches) => {
+        if (!matches) {
+          return null
+        }
         const newMatches = matches.map((m) => {
           if (m.id === match.id) {
             return match
@@ -50,7 +45,7 @@ function App() {
     }
   }, [])
 
-  const runMatches = useCallback((event) => {
+  const runMatches = useCallback(() => {
     fetch('/api/tournament', {method: 'POST'}).then((response) => {
       if (!response.ok) {
         throw new Error(`HTTP error! status: ${response.status}`);
@@ -59,24 +54,15 @@ function App() {
     }).then((json) => {
       console.log(json)
     });
-  })
-
-  if (botList.length === 0) {
-    return <div>Loading...</div>
-  }
+  }, [])
 
   return (
-    <div className="App">
-      <h2>Bots</h2>
-      {
-        botList.map((bot) => {
-          return <div key={bot.name}>{bot.name}</div>
-        })
-      }
+    <div>
+      <h1>Tournament</h1>
       <button onClick={runMatches}>Run matches</button>
       <Tournament matches={matches}/>
     </div>
   );
 }
 
-export default App;
+export default LiveTournamentPage;

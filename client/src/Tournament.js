@@ -10,8 +10,8 @@ export const MatchParticipant = (props) => {
     return <div className={"matchparticipant" + (party.isWinner ? ' winner' : '')}>
         <div>{party.name}</div>
         <div style={{display: 'flex'}}>
-            {resultText.map((result) => {
-                return <div style={{minWidth: '20px'}}>{result}</div>
+            {resultText.map((result, i) => {
+                return <div key={i} style={{minWidth: '20px'}}>{result}</div>
             })}
             { props.inProgress ? <CircularProgress size={20}/> : null}
         </div>
