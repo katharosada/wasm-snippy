@@ -1,0 +1,11 @@
+[package]
+name = "wasi-runner"
+version = "0.1.0"
+edition = "2021"
+
+# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+
+[dependencies]
+wasi-common = "14.0.4"
+wasmtime = "14.0.4"
+wasmtime-wasi = "14.0.4"
