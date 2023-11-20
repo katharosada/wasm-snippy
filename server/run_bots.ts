@@ -1,5 +1,6 @@
-import { WASI } from '@runno/wasi';
 import fs from 'fs';
+import { runRunnoWasiPython } from './runno';
+import { WASI } from 'wasi';
 
 export enum Option {
     scissors = 'scissors',  
@@ -23,59 +24,57 @@ export interface BotInfo {
     script_contents: string,
 }
 
-export async function runRunnoWasiPython(bot: BotInfo): Promise<Option> {
-    // const wasmBuffer = fs.readFileSync('../sample-bots/wasi-bot/target/wasm32-wasi/debug/wasi-bot.wasm');
-    const wasmBuffer = fs.readFileSync('./wasm/python-3.11.4.wasm');
-
-    const capturedStdout: string[] = []
-    const capturedStderr: string[] = []
-    const wasi = new WASI({
-        args: ["python.wasm", "main.py"],
-        env: { },
-        stdout: (out) => {
-            out.split('\n').forEach((line) => {                
-                capturedStdout.push(line)
-            })
-        },
-        stderr: (err) => {
-            capturedStderr.push(err)
-        },
-        fs: {
-            "/main.py": {
-              path: "/main.py",
-              timestamps: {
-                access: new Date(),
-                change: new Date(),
-                modification: new Date(),
-              },
-              mode: "string",
-              content: bot.script_contents,
+async function runNodeWasiPython(bot: BotInfo): Promise<Option> {
+    fs.rmSync('./tmp', { recursive: true, force: true });
+    fs.mkdirSync('./tmp');
+    fs.writeFileSync('./tmp/stdin', '');
+    try {
+        fs.writeFileSync('./tmp/main.py', bot.script_contents);
+        const wasi = new WASI({
+            // @ts-ignore
+            version: 'preview1',
+            args: ['python', '/main.py'],
+            env: {},
+            preopens: {
+                '/': './tmp',
             },
-          },
-    });
-    const wasm = await WebAssembly.instantiate(wasmBuffer, wasi.getImportObject());
-    const result = wasi.start(wasm);
-    console.log(capturedStdout);
-    console.log(capturedStderr)
-    
-    let lastLine = '';
-    let secondLastLine = '';
-    if (capturedStdout.length !== 0) {
-        lastLine = capturedStdout[capturedStdout.length - 1].trim();
-    }
-    if (capturedStdout.length > 1) {
-        secondLastLine = capturedStdout[capturedStdout.length - 2].trim();
-    }
-    const num = lastLine ? parseInt(lastLine) : parseInt(secondLastLine);
-    switch (num) {
-        case 0:
-            return Option.scissors;
-        case 1:
-            return Option.paper;
-        case 2:
-            return Option.rock;
-        default:
-            return Option.invalid;
+            stdin: fs.openSync('./tmp/stdin', 'r'),
+            stdout: fs.openSync('./tmp/stdout', 'w'),
+            stderr: fs.openSync('./tmp/stderr', 'w'),
+        });
+
+        const wasmBuffer = fs.readFileSync('./wasm/python-3.11.4.wasm');
+        const wasm = await WebAssembly.compile(wasmBuffer);
+        // @ts-ignore
+        const instance = await WebAssembly.instantiate(wasm, wasi.getImportObject());
+        wasi.start(instance);
+        const capturedStdout: string[] = fs.readFileSync('./tmp/stdout', 'utf8').split('\n');
+
+        let lastLine = '';
+        let secondLastLine = '';
+        if (capturedStdout.length !== 0) {
+            lastLine = capturedStdout[capturedStdout.length - 1].trim();
+        }
+        if (capturedStdout.length > 1) {
+            secondLastLine = capturedStdout[capturedStdout.length - 2].trim();
+        }
+        const num = lastLine ? parseInt(lastLine) : parseInt(secondLastLine);
+        switch (num) {
+            case 0:
+                return Option.scissors;
+            case 1:
+                return Option.paper;
+            case 2:
+                return Option.rock;
+            default:
+                return Option.invalid;
+        }
+    } catch (e) {
+        console.log(e);
+        return Option.invalid;
+    } finally {
+        // Clean up the temp folder.
+        fs.rmSync('./tmp', { recursive: true, force: true });
     }
 }
 
@@ -89,6 +88,7 @@ export async function runBot(bot: BotInfo): Promise<Option> {
                 return runBuiltinBot(bot);
             case BotRunType.PYTHON:
                 return runRunnoWasiPython(bot);
+                // return runNodeWasiPython(bot);
             default:
                 return Option.invalid;
         }
