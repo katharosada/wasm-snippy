@@ -9,6 +9,11 @@
   dependencies:
     regenerator-runtime "^0.14.0"
 
+"@runno/wasi@^0.6.1":
+  version "0.6.1"
+  resolved "https://registry.yarnpkg.com/@runno/wasi/-/wasi-0.6.1.tgz#4aef9d7ec0501b3aeb319d92efaa39c5ab14807f"
+  integrity sha512-Y4G4qD35Idy3r9M23zRxHwrd8bczVnaL7zuge88ALoIeStbHArKFiMNOGW/Dax+sFNnmSDTRUqolM81fY035Kg==
+
 "@socket.io/component-emitter@~3.1.0":
   version "3.1.0"
   resolved "https://registry.yarnpkg.com/@socket.io/component-emitter/-/component-emitter-3.1.0.tgz#96116f2a912e0c02817345b3c10751069920d553"

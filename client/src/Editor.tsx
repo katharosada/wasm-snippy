@@ -12,9 +12,20 @@ export const Editor = (props: {
   initialContent: string
   onEdit: (newContent: string) => void
 }) => {
-  const { language, initialContent } = props
+  const { language, initialContent, onEdit } = props
   const [editor, setEditor] = useState<monaco.editor.IStandaloneCodeEditor | null>(null)
   const monacoEl = useRef(null)
+
+  useEffect(() => {
+    if (editor) {
+      const listener = editor.onDidChangeModelContent(() => {
+        onEdit(editor.getValue())
+      })
+      return () => {
+        listener.dispose()
+      }
+    }
+  }, [editor, onEdit])
 
   useEffect(() => {
     if (monacoEl) {

@@ -1,14 +1,16 @@
 import express, { Express, Request, Response } from 'express';
 import dotenv from 'dotenv';
-import fs from 'fs';
 
 import {Server} from 'socket.io';
 import pg from 'pg-promise';
+import { BotInfo, BotRunType, Option, runBot } from './run_bots';
 
 dotenv.config();
 
 const app: Express = express();
 const port = process.env.PORT || 3001;
+
+app.use(express.json());
 
 const pgp = pg({});
 const db = pgp(process.env.DATABASE_URL || '');
@@ -17,13 +19,6 @@ const db = pgp(process.env.DATABASE_URL || '');
 app.get('/', (req: Request, res: Response) => {
   res.send('Express + TypeScript Server');
 });
-
-enum Option {
-    scissors = 'scissors',  
-    paper = 'paper',
-    rock = 'rock',
-    invalid = 'invalid'
-}
 
 const convertToEmoji = (choices: Option[]): string[] => {
     const emojiList = choices.map(choice => {
@@ -58,51 +53,15 @@ interface MultiMatchResults {
     outcome: MatchOutcome;
 }
 
-async function runBot(bot: BotSpec): Promise<Option> {
-    let wasmBuffer;
-    switch(bot.run_type) {
-        case 1:
-            wasmBuffer = fs.readFileSync('../sample-bots/random-bot/pkg/random_bot_bg.wasm');
-            break;
-        case 2:
-            wasmBuffer = fs.readFileSync('../sample-bots/rock-bot/pkg/rock_bot_bg.wasm');
-            break;
-        case 3:
-            wasmBuffer = fs.readFileSync('../sample-bots/paper-bot/pkg/paper_bot_bg.wasm');
-            break;
-        case 4:
-            wasmBuffer = fs.readFileSync('../sample-bots/snippy-bot/pkg/snippy_bot_bg.wasm');
-            break;
-        default:
-            return Option.invalid;
-    }
-    const rando = Math.floor(Math.random() * 100);
-    const num = await WebAssembly.instantiate(wasmBuffer).then(wasmModule => {
-        const { select_move } = wasmModule.instance.exports as { select_move: (randomNum: number) => number };
-        const result = select_move(rando);
-        return result;
-    });
-    switch (num) {
-        case 0:
-            return Option.scissors;
-        case 1:
-            return Option.paper;
-        case 2:
-            return Option.rock;
-        default:
-            return Option.invalid;
-    }
-}
-
 interface BotSpec {
     id: number,
     name: string,
-    run_type: number,
+    run_type: BotRunType,
     isWinner?: boolean,
     resultText?: string[],
 }
 
-async function runMatch(bot1: BotSpec, bot2: BotSpec): Promise<MatchResults> {
+async function runMatch(bot1: BotInfo, bot2: BotInfo): Promise<MatchResults> {
     const [bot1Choice, bot2Choice] = await Promise.all([runBot(bot1), runBot(bot2)])
     let outcome: MatchOutcome = 'bot2'
     if (bot1Choice === bot2Choice) {
@@ -121,7 +80,7 @@ async function runMatch(bot1: BotSpec, bot2: BotSpec): Promise<MatchResults> {
     }
 }
 
-const runNMatches = async (match: Match, n: number = 5): Promise<MultiMatchResults> => {
+const runNMatches = async (match: Match, botScripts: Map<string, string>, n: number = 5): Promise<MultiMatchResults> => {
     match.state = 'IN_PROGRESS';
     io.to('tournament').emit('match', match);
     const bot1 = match.participants[0]
@@ -130,7 +89,19 @@ const runNMatches = async (match: Match, n: number = 5): Promise<MultiMatchResul
     const bot1Choices = []
     const bot2Choices = []
     for (let i = 0; i < n; i++) {
-        const result = await runMatch(bot1, bot2);
+        const bot1Info = {
+            id: bot1.id,
+            name: bot1.name,
+            run_type: bot1.run_type,
+            script_contents: botScripts.get(bot1.name) || '',
+        };
+        const bot2Info = {
+            id: bot2.id,
+            name: bot2.name,
+            run_type: bot2.run_type,
+            script_contents: botScripts.get(bot2.name) || '',
+        };
+        const result = await runMatch(bot1Info, bot2Info);
         // Artificially slow for dramatic purposes.
         await new Promise(r => setTimeout(r, 800));
         bot1Choices.push(result.bot1);
@@ -183,8 +154,8 @@ const generateMatchID = (): string => {
     return Math.random().toString(36).substring(2, 15) + Math.random().toString(36).substring(2, 15);
 }
 
-const generateMatches = (botsRaw: BotSpec[]): Match[] => {
-    const bots1 = shuffleArray(botsRaw) as BotSpec[];
+const generateMatches = (botsRaw: BotInfo[]): Match[] => {
+    const bots1 = shuffleArray(botsRaw) as BotInfo[];
     const bots = bots1.map((bot) => ({...bot}));
 
     // const rounds = generateTournamentRounds(bots.length);
@@ -242,7 +213,9 @@ const generateMatches = (botsRaw: BotSpec[]): Match[] => {
 };
 
 app.post('/api/tournament', async (req: Request, res: Response) => {
-    const botsRaw = await db.query('SELECT id, name, run_type FROM bots') as BotSpec[];
+    const botsRaw = await db.query('SELECT id, name, run_type, script_contents FROM bots') as BotInfo[];
+    const botScripts = new Map(botsRaw.map(bot => [bot.name, bot.script_contents]));
+    console.log(botScripts)
     const matches = generateMatches(botsRaw);
     res.json({success: true});
 
@@ -254,7 +227,7 @@ app.post('/api/tournament', async (req: Request, res: Response) => {
         if (match.state === 'WALK_OVER') {
             winner = match.participants[0];
         } else {
-            const results = await runNMatches(match);
+            const results = await runNMatches(match, botScripts);
             if (results.outcome === 'bot1') {
                 winner = match.participants[0];
                 match.participants[1].isWinner = false;
@@ -291,10 +264,26 @@ app.get('/api/bots', async (req: Request, res: Response) => {
     res.json(results);
 });
 
+app.post('/api/bots', async (req: Request, res: Response) => {
+    const name = req.body.botname;
+    const runType: BotRunType = BotRunType.PYTHON;
+    const content = req.body.content;
+    if (!name) {
+        res.status(400).json({success: false, error: 'Missing bot name'});
+        return;
+    }
+    if (!content) {
+        res.status(400).json({success: false, error: 'Missing bot content'});
+        return;
+    }
+    await db.query('INSERT INTO bots (name, run_type, script_contents) VALUES ($1, $2, $3)', [name, runType, content]);
+
+    res.json({success: true});
+});
+
 const server = app.listen(port, () => {
   console.log(`Server is running at http://localhost:${port}`);
 });
-
 
 const io = new Server(server, {
     // Socket.IO options

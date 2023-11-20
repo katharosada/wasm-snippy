@@ -2,6 +2,7 @@ DROP TABLE IF EXISTS bots;
 DROP USER IF EXISTS snippyuser;
 
 CREATE USER snippyuser WITH PASSWORD 'snippy123';
+GRANT USAGE, SELECT ON ALL SEQUENCES IN SCHEMA public to snippyuser;
 
 CREATE TABLE bots (
     id SERIAL PRIMARY KEY,
@@ -10,7 +11,7 @@ CREATE TABLE bots (
     script_contents TEXT,
     created_at TIMESTAMP NOT NULL DEFAULT NOW()
 );
-GRANT SELECT, INSERT, UPDATE, DELETE ON TABLE bots TO snippyuser;
+GRANT ALL PRIVILEGES ON TABLE bots TO snippyuser;
 
 INSERT INTO bots (name, run_type, script_contents) VALUES ('randobot', 1, '');
 INSERT INTO bots (name, run_type, script_contents) VALUES ('randito', 1, '');
