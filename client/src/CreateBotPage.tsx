@@ -1,45 +1,200 @@
+import Box from '@mui/material/Box'
 import Button from '@mui/material/Button'
+import ExpandMoreIcon from '@mui/icons-material/ExpandMore'
 import React, { FormEvent, useCallback, useEffect } from 'react'
-import TextField from '@mui/material/TextField'
+import { Accordion, AccordionDetails, AccordionSummary, Link, Typography } from '@mui/material'
 import { Editor, SupportedLanguage } from './Editor'
 
-function CreateBotPage(props: { setTitle: (title: string) => void }) {
-  const { setTitle } = props
-  const [content, setContent] = React.useState("print('Hello')")
+const defaultPython =
+  `` +
+  `print('Hello, I always choose rock.')
+print('rock')
+`
+
+enum BotPlay {
+  Scissors = 'Scissors',
+  Paper = 'Paper',
+  Rock = 'Rock',
+  Invalid = 'Invalid',
+}
+
+interface TestResults {
+  duration: number
+  invalid_reason?: string | null
+  result: BotPlay
+  stderr: string
+  stdin: string
+  stdout: string
+}
+
+const getEmoji = (play?: BotPlay): string => {
+  switch (play) {
+    case BotPlay.Scissors:
+      return '✂️'
+    case BotPlay.Paper:
+      return '📄'
+    case BotPlay.Rock:
+      return '🗿'
+    default:
+      return ''
+  }
+}
+
+const startingCode = localStorage.getItem('code') || defaultPython
+
+function CreateBotPage() {
+  const [content, setContent] = React.useState(startingCode)
+  const [testing, setTesting] = React.useState(false)
+  const [testResults, setTestResults] = React.useState(null as TestResults | null)
 
   useEffect(() => {
-    setTitle('Create Bot')
+    const code = localStorage.getItem('code')
+    if (code) {
+      setContent(code)
+    }
   }, [])
 
   const onEdit = useCallback((content: string) => {
     console.log('edited')
+    localStorage.setItem('code', content)
     setContent(content)
   }, [])
 
   const onSubmit = (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault()
     const formData = new FormData(event.target as HTMLFormElement)
-    const botname = formData.get('botname')
-    fetch('/api/bots/', {
+    const botname = formData.get('botname') || 'My Bot'
+    const runType = 'Python'
+    setTesting(true)
+    setTestResults(null)
+    fetch('/api/test', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ botname, content }),
+      body: JSON.stringify({ botname, botcode: content, run_type: runType }),
     })
+      .then((response) => {
+        setTesting(false)
+        if (response.ok) {
+          console.log(response)
+          return response.json()
+        }
+        throw new Error(`Error! Request returned status: ${response.status}`)
+      })
+      .then((json) => {
+        console.log(json)
+        setTestResults(json)
+      })
+      .catch((error) => {
+        setTestResults({
+          duration: 0,
+          invalid_reason: error.message,
+          result: BotPlay.Invalid,
+          stderr: '',
+          stdin: '',
+          stdout: '',
+        })
+      })
   }
 
   return (
-    <div>
-      <h1>Create Bot</h1>
-      <Editor language={SupportedLanguage.PYTHON} initialContent="print('Hello')" onEdit={onEdit} />
-      <form onSubmit={onSubmit}>
-        <TextField id="botname" name="botname" placeholder="Bot Name" defaultValue={''} variant="outlined" />
-        <div>
-          <Button variant="contained" type="submit">
-            Submit
-          </Button>
-        </div>
-      </form>
-    </div>
+    <Box pb={2}>
+      <Box py={2}>
+        <Typography variant="h3" component={'h2'} sx={{ py: 1, fontSize: '18pt' }}>
+          Create a Scissors-Paper-Rock bot
+        </Typography>
+        <Typography py={1}>
+          {`You've probably played `}
+          <Link href="https://en.wikipedia.org/wiki/Rock_paper_scissors" target="_blank">
+            Scissors, Paper, Rock
+          </Link>{' '}
+          or a similar game before. Can you write a program to play it?
+        </Typography>
+
+        <Typography py={1}>
+          {`The tournament works by elimination, through a series of battles between pairs of bots. For each battle, both
+          bots will be executed once to return their `}
+          <strong>{`play ("scissors", "paper" or "rock")`}</strong>.
+          {`A winning play (e.g. "rock" beats "scissors") will result in the winning bot advancing, and the loser being eliminated.`}
+        </Typography>
+        <Typography py={1}>
+          {`If both bots return the same play, the battle is repeated up to 5 times until there is a winner. If both bots
+          return the identical plays for all 5 rounds then a winner is chosen randomly.`}
+        </Typography>
+
+        <Typography variant="h3" sx={{ pt: 2, pb: 1, fontSize: '14pt', fontWeight: 400 }}>
+          {`Output "rock", "paper" or "scissors"`}
+        </Typography>
+        <Typography pt={1} pb={2}>
+          {`A bot program must output a valid play as the `}
+          <strong>last line of Standard Output (stdout)</strong>.
+          {`The last line must be one of "scissors", "paper" or
+          "rock" with nothing else on the same line. The program may write other information to stdout or stderr, but
+          everything except the last line of stdout will be ignored.`}
+        </Typography>
+        <Accordion>
+          <AccordionSummary expandIcon={<ExpandMoreIcon />} aria-controls="panel1a-content" id="panel1a-header">
+            <Typography sx={{ fontSize: '12pt', fontWeight: 400 }}>Optional JSON input</Typography>
+          </AccordionSummary>
+          <AccordionDetails>
+            <Typography pt={1}>
+              The program will be provided a JSON string to the Standard Input (stdin). This input contains information
+              which may help calculate more strategic plays. This JSON will always be one line (no newlines) and will be
+              structured as follows:
+            </Typography>
+            <pre>
+              {`{
+  "botname": "My Bot",     // This is your own bot's name
+  "round": 1,              // Round number for this battle, starting at 0. E.g. 1 if the first round was a draw.
+  "opponent": "RandomBot", // Opponent's name
+  "opponent_history": [    // The choices this opponent has made in the past, including previous rounds in this this battle.
+    {
+      "round": 0,
+      "play": "scissors",
+      "opponent": "RandomBot",
+      "opponent_play": "scissors"
+    },
+    {
+      "round": 0,
+      "play": "paper",
+      "opponent": "Rocky",
+      "opponent_play": "rock"
+    },
+    ...
+  ]
+}`}
+            </pre>
+          </AccordionDetails>
+        </Accordion>
+      </Box>
+
+      <Editor language={SupportedLanguage.PYTHON} initialContent={startingCode} onEdit={onEdit} />
+      <Box py={2}>
+        <form onSubmit={onSubmit}>
+          {/* <TextField id="botname" name="botname" placeholder="Bot Name" defaultValue={''} variant="outlined" /> */}
+          <div>
+            <Button variant="contained" type="submit" disabled={testing}>
+              &nbsp;Test&nbsp;
+            </Button>
+          </div>
+        </form>
+      </Box>
+      <Box>
+        <Typography>
+          Play:{' '}
+          {getEmoji(testResults?.result) +
+            testResults?.result +
+            (testResults?.invalid_reason ? ` (${testResults.invalid_reason})` : '')}
+        </Typography>
+        <Typography>Stdout</Typography>
+        <Box bgcolor={'#DDD'} sx={{ minHeight: 50, borderRadius: '5px', mb: 3, px: 2, py: 1 }}>
+          <pre>{testResults?.stdout}</pre>
+        </Box>
+        <Typography>Stderr</Typography>
+        <Box bgcolor={'#DDD'} sx={{ minHeight: 50, borderRadius: '5px', mb: 3, px: 2, py: 1 }}>
+          <pre>{testResults?.stderr}</pre>
+        </Box>
+      </Box>
+    </Box>
   )
 }
 

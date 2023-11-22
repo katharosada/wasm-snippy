@@ -4,13 +4,8 @@ import { useCallback, useEffect, useState } from 'react'
 
 import { io } from 'socket.io-client'
 
-function LiveTournamentPage(props: { setTitle: (title: string) => void }) {
-  const { setTitle } = props
+function LiveTournamentPage() {
   const [matches, setMatches] = useState(null as any)
-
-  useEffect(() => {
-    setTitle('Tournament')
-  }, [])
 
   useEffect(() => {
     const socket = io()

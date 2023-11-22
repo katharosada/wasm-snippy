@@ -10,13 +10,7 @@ async function fetchBotList() {
   return json
 }
 
-function LeaderboardPage(props: { setTitle: (title: string) => void }) {
-  const { setTitle } = props
-
-  useEffect(() => {
-    setTitle('Leaderboard')
-  }, [])
-
+function LeaderboardPage() {
   const [botList, setBotList] = useState([] as any[])
 
   useEffect(() => {

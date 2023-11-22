@@ -1,22 +1,26 @@
 import './App.css'
+import Box from '@mui/material/Box'
 import CreateBotPage from './CreateBotPage'
-import DrawerAppBar from './DrawerAppBar'
-import LeaderboardPage from './LeaderboardPage'
-import LiveTournamentPage from './LiveTournamentPage'
 import React, { useState } from 'react'
-import { Route, Routes } from 'react-router-dom'
+import ResponsiveAppBar from './ResponsiveAppBar'
+
+const pages = ['Create']
 
 function App() {
-  const [title, setTitle] = useState('')
+  const [currentPage, setCurrentPage] = useState('Create')
+
+  const setPage = (page: string) => {
+    console.log(page)
+    setCurrentPage(page)
+  }
 
   return (
-    <Routes>
-      <Route path="/" element={<DrawerAppBar title={title} />}>
-        <Route index element={<LiveTournamentPage setTitle={setTitle} />} />
-        <Route path="/create" element={<CreateBotPage setTitle={setTitle} />} />
-        <Route path="/leaderboard" element={<LeaderboardPage setTitle={setTitle} />} />
-      </Route>
-    </Routes>
+    <>
+      <ResponsiveAppBar pages={pages} setPage={setPage} />
+      <Box sx={{ px: 3, maxWidth: 900, margin: '0 auto' }}>
+        <CreateBotPage />
+      </Box>
+    </>
   )
 }
 

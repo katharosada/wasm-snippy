@@ -88,9 +88,9 @@ pub struct BotRunResult {
 #[derive(Serialize)]
 pub struct BotMatchOutcome {
     pub round: u32,
-    pub choice: SPROption,
+    pub play: SPROption,
     pub opponent: String,
-    pub opponent_choice: SPROption,
+    pub opponent_play: SPROption,
 }
 
 #[derive(Serialize)]
@@ -145,12 +145,12 @@ fn trim_newlines<'a>(s: &'a str) -> &'a str {
 
 fn extract_result_from_stdout(stdout: &String) -> SPROption {
     let lines: Vec<&str> = trim_newlines(stdout).split("\n").collect();
-    let last_line = lines.last().unwrap();
+    let last_line = *lines.last().unwrap_or(&"");
     println!("Last line: {}", last_line);
-    match last_line.get(0..1) {
-        Some("0") => SPROption::Scissors,
-        Some("1") => SPROption::Paper,
-        Some("2") => SPROption::Rock,
+    match last_line.to_lowercase().as_str() {
+        "scissors" => SPROption::Scissors,
+        "paper" => SPROption::Paper,
+        "rock" => SPROption::Rock,
         _ => SPROption::Invalid
     }
 }
@@ -223,7 +223,7 @@ fn test_python_bot(bot_details: &BotDetails, input: String) -> Result<BotRunResu
     }
     let bot_result = extract_result_from_stdout(&stdout_str);
     let invalid_reason = match bot_result {
-        SPROption::Invalid => Some("Program did not print 0, 1 or 2 on the last line.".to_string()),
+        SPROption::Invalid => Some("Program did not print a valid play on the last line.".to_string()),
         _ => None  
     };
     return Ok(BotRunResult{
