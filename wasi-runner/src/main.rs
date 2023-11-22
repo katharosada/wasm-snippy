@@ -1,92 +1,68 @@
-use std::env;
-use std::fs;
-use std::path::Path;
-use wasmtime::*;
-use wasmtime_wasi::sync::WasiCtxBuilder;
-use wasi_common::pipe::ReadPipe;
-use wasi_common::pipe::WritePipe;
-use std::time::{Duration, Instant};
+use axum::{
+    routing::{get, post},
+    http::StatusCode,
+    response::{IntoResponse, Response},
+    Json, Router,
+};
+use serde::Deserialize;
+use tournament::{BotRunType, BotDetails};
+use std::net::SocketAddr;
+
+mod tournament;
 
 
-enum SPROption {
-    Scissors = 0,
-    Paper,
-    Rock,
-    Invalid
+#[tokio::main]
+async fn main() {
+    // initialize tracing
+    tracing_subscriber::fmt::init();    
+
+    // Can call init to pre-warm the wasm runtime but it slows down startup.
+    tournament::init();
+
+    // build our application with a route
+    let app = Router::new()
+        // `GET /` goes to `root`
+        .route("/", get(root))
+        .route("/api/test", post(test_bot));
+
+    // run our app with hyper
+    // `axum::Server` is a re-export of `hyper::Server`
+    let addr = SocketAddr::from(([0, 0, 0, 0], 3001));
+    tracing::debug!("listening on {}", addr);
+    axum::Server::bind(&addr)
+        .serve(app.into_make_service())
+        .await
+        .unwrap();
 }
 
-fn run_python(python_module: &Module, engine: &Engine, python_code: String) -> wasmtime::Result<SPROption> {    
-    let mut linker = Linker::new(&engine);
-    wasmtime_wasi::add_to_linker(&mut linker, |s| s)?;
+async fn root() -> &'static str {
+    "Hello, World!"
+}
 
-    // Fake args
-    let args: &[String] = &["python".to_string(), "main.py".to_string()];
+#[derive(Deserialize)]
+struct TestBotRequest {
+    botname: String,
+    botcode: String,
+    run_type: BotRunType,
+}
 
-    let stdin = ReadPipe::from("");
-    let stdout = WritePipe::new_in_memory();
-    let stderr = WritePipe::new_in_memory();
+async fn test_bot(Json(payload): Json<TestBotRequest>) -> Response {
+    let botname = payload.botname;
+    let botcode = payload.botcode;
 
-    println!("Creating tempdir");
-    let temp_dir_path = env::temp_dir();
-    let temp_dir = fs::File::open(temp_dir_path.clone())?;
-    let main_py_path = temp_dir_path.join("main.py");
-    fs::write(main_py_path, python_code.as_bytes())?;
+    let bot: BotDetails = BotDetails {
+        run_type: payload.run_type,
+        name: botname.clone(),
+        code: botcode.clone(),
+        wasm_path: "".to_string(),
+    };
 
-    println!("Settingup WASI Dir");
-    let root_dir = wasmtime_wasi::sync::Dir::from_std_file(temp_dir);
-    let root_dir_internal_path = Path::new("/");
-
-    println!("Building WASI context");
-    let wasi = WasiCtxBuilder::new()
-        .args(&args)?
-        .stdin(Box::new(stdin))
-        .stdout(Box::new(stdout.clone()))
-        .stderr(Box::new(stderr.clone()))
-        .preopened_dir(root_dir, root_dir_internal_path)?
-        .build();
-
-    println!("Creating Store");
-    let mut store = Store::new(&engine, wasi);
-    store.add_fuel(1_000_000_000)?;
-
-    println!("Linking modules");
-    linker.module(&mut store, "", &python_module)?;
-    println!("Running...");
-    let start = Instant::now();
-    let result = linker
-        .get_default(&mut store, "")?
-        .typed::<(), ()>(&store)?
-        .call(&mut store, ());
-
-    let duration = start.elapsed();
-    println!("Stopped after {}s", duration.as_secs_f32());
-    drop(store);
-    // Print the contents of stdout pipe
-    let stdout_buf: Vec<u8> = stdout.try_into_inner().expect("sole remaining reference to WritePipe").into_inner();
-    let stdout_str = String::from_utf8_lossy(&stdout_buf);
-    // println!("contents of stdout: {:?}", stdout_str);
-
-    if (result.is_err()) {
-        println!("Error running python.");
-        return Ok(SPROption::Invalid);
+    let result = tournament::test_bot(&bot);
+    match result {
+        Ok(payload) => (StatusCode::OK, Json(payload)).into_response(),
+        Err(e) => {
+            println!("Error: {}", e);
+            return (StatusCode::INTERNAL_SERVER_ERROR, Json("Unexpected error occurred".to_string())).into_response();
+        }
     }
-    return Ok(SPROption::Scissors);
-}
-
-fn main() -> wasmtime::Result<()> {
-    let start = Instant::now();
-    let mut config = Config::new();
-    config.wasm_component_model(true);
-    config.consume_fuel(true);
-    let engine = Engine::new(&config)?;
-    // Instantiate our module with the imports we've created, and run it.
-    let module = Module::from_file(&engine, "./python-3.11.4.wasm")?;
-
-    let duration = start.elapsed();
-    println!("Loaded in {}s", duration.as_secs_f32());
-    run_python(&module, &engine, "import random\nprint(random.randint(0, 2))\n".to_string());
-    run_python(&module, &engine, "while True:\n  print('Hello')\n".to_string());
-    run_python(&module, &engine, "import random\nprint(random.randint(0, 2))\n".to_string());
-
-    Ok(())
 }
