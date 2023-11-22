@@ -182,7 +182,7 @@ function CreateBotPage() {
         <Typography>
           Play:{' '}
           {getEmoji(testResults?.result) +
-            testResults?.result +
+            (testResults?.result || '') +
             (testResults?.invalid_reason ? ` (${testResults.invalid_reason})` : '')}
         </Typography>
         <Typography>Stdout</Typography>
