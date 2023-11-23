@@ -1,42 +1,41 @@
 import './App.css'
+import { ApiTournament } from './api'
+import { Box, Typography } from '@mui/material'
 import { Match, Tournament } from './Tournament'
-import { useCallback, useEffect, useState } from 'react'
+import { useCallback, useState } from 'react'
 
-import { io } from 'socket.io-client'
+const stateConverter = {
+  NotStarted: '',
+  InProgress: 'IN_PROGRESS',
+  Bye: 'WALK_OVER',
+  Finished: 'DONE',
+}
+
+function convertMatches(tournament: ApiTournament): Match[] {
+  const matches = tournament.matches.map((apiMatch) => {
+    const participants = apiMatch.participants.map((participant) => {
+      return {
+        id: participant.name,
+        name: participant.name,
+        isWinner: false,
+        resultText: null,
+      }
+    })
+
+    return {
+      id: apiMatch.id,
+      nextMatchId: apiMatch.next_match_id,
+      startTime: '',
+      state: stateConverter[apiMatch.state],
+      participants: participants,
+    }
+  })
+
+  return matches
+}
 
 function LiveTournamentPage() {
   const [matches, setMatches] = useState(null as any)
-
-  useEffect(() => {
-    const socket = io()
-
-    socket.on('connect', () => {
-      console.log('connected')
-    })
-
-    socket.on('tournament', (data) => {
-      setMatches(data)
-    })
-
-    socket.on('match', (match) => {
-      setMatches((matches: Match[]) => {
-        if (!matches) {
-          return null
-        }
-        const newMatches = matches.map((m) => {
-          if (m.id === match.id) {
-            return match
-          }
-          return m
-        })
-        return newMatches
-      })
-    })
-
-    return () => {
-      socket.disconnect()
-    }
-  }, [])
 
   const runMatches = useCallback(() => {
     fetch('/api/tournament', { method: 'POST' })
@@ -47,16 +46,20 @@ function LiveTournamentPage() {
         return response.json()
       })
       .then((json) => {
-        console.log(json)
+        setMatches(convertMatches(json))
       })
   }, [])
 
   return (
-    <div>
-      <h1>Tournament</h1>
+    <Box pb={2}>
+      <Box py={2}>
+        <Typography variant="h3" component={'h2'} sx={{ py: 1, fontSize: '18pt' }}>
+          Tournament
+        </Typography>
+      </Box>
       <button onClick={runMatches}>Run matches</button>
       <Tournament matches={matches} />
-    </div>
+    </Box>
   )
 }
 

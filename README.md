@@ -7,9 +7,9 @@ The bots are run in WebAssembly for sandboxing, and do not rely on OS-level sand
 
 ## Local development
 
-You'll need node, yarn and postgres installed.
+You'll need node and yarn for the frontend client code. See: [Installing Node](https://nodejs.org/en/download) and [Installing Yarn](https://yarnpkg.com/getting-started/install)
 
-To build the Rust-based sample bots, you'll also need the Rust development tools.
+For the backend server, you'll need a Rust toolchain and Postgres installed. See [Installing Rust and Cargo](https://doc.rust-lang.org/cargo/getting-started/installation.html) and [Installing Postgres](https://www.postgresql.org/download/)
 
 ### Client (Web UI)
 
@@ -32,37 +32,35 @@ This should automatically open a browser window at `http://localhost:3000/`.
 The client code isn't very useful without the server and database behind it.
 The client devserver is configured to proxy to `localhost:3001` for server requests (the default) so you can develop the client and server at the same time, despite the client running as a separate webserver.
 
-### Setup a database and run the server locally
+### Setup a database
 
-The backend is a NodeJS Express server, the code is in the `server/` folder. The server should be run in a separate terminal while the client devserver is running.
+Create a fresh postgres DB called `snippy`
 
-Create a fresh postgres DB, create necessary tables and populate it with some sample bots.
+```
+createdb
+```
+
+Then there's a script to create the necessary tables and populate it with some sample bots.
 
 **NOTE:** This will also create a database user called `snippyuser` with login and (insecure) password.
 This is for local development only.
 
 ```sh
 cd server/
-createdb snippy
 psql snippy < setup.sql
 ```
 
-Create a file called `.env` in the `server` folder and populate it like this:
+### Build and run the server
+
+In a separate terminal to the client devserver, go to the `wasi-runner` folder and run `cargo run`.
 
 ```
-DATABASE_URL="postgres://snippyuser:snippy123@localhost:5432/snippy"
+cd wasi-runner
+cargo run
 ```
 
-To build and run the server:
+This will start the server on port 3001, the client devserver is set up to proxy API calls to this port.
 
-```
-yarn
-yarn build
-yarn start
-```
+The server may take about 15 seconds (or more depending on your machine) to start up because it loads the wasm engine and modules before starting the http server.
 
-To automatically update the server whenever the files are changed run:
-
-```
-yarn dev
-```
+Check that the server is running correctly by visiting http://localhost:3001/ in the browser. If that loads, then the UI should also be able to run bots and tournaments via the API.

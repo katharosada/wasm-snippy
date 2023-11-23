@@ -24,7 +24,8 @@ async fn main() {
         // `GET /` goes to `root`
         .route("/", get(root))
         .route("/health", get(health))
-        .route("/api/test", post(test_bot));
+        .route("/api/test", post(test_bot))
+        .route("/api/tournament", post(create_tournament));
 
     // run our app with hyper
     // `axum::Server` is a re-export of `hyper::Server`
@@ -49,6 +50,17 @@ struct TestBotRequest {
     botname: String,
     botcode: String,
     run_type: BotRunType,
+}
+
+async fn create_tournament() -> Response {
+    let result = tournament::create_tournament();
+    match result {
+        Ok(payload) => (StatusCode::OK, Json(payload)).into_response(),
+        Err(e) => {
+            println!("Error: {}", e);
+            return (StatusCode::INTERNAL_SERVER_ERROR, Json("Unexpected error occurred".to_string())).into_response();
+        }
+    }
 }
 
 async fn test_bot(Json(payload): Json<TestBotRequest>) -> Response {

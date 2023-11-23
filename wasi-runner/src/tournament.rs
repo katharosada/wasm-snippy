@@ -19,12 +19,14 @@ pub enum SPROption {
     Invalid
 }
 
-#[derive(Deserialize)]
+#[derive(Clone)]
+#[derive(Deserialize, Serialize)]
 pub enum BotRunType {
     Wasi = 1,
     Python,
 }
 
+#[derive(Clone, Serialize)]
 pub struct BotDetails {
     pub run_type: BotRunType,
     pub name: String,
@@ -234,4 +236,133 @@ fn test_python_bot(bot_details: &BotDetails, input: String) -> Result<BotRunResu
         result: bot_result,
         invalid_reason: invalid_reason
     });
+}
+
+
+fn get_bots() -> Vec<BotDetails> {
+    return vec![
+        BotDetails {
+            run_type: BotRunType::Python,
+            name: "rocky".to_string(),
+            code: "print('rock')".to_string(),
+            wasm_path: "".to_string()
+        },
+        BotDetails {
+            run_type: BotRunType::Python,
+            name: "rando bot".to_string(),
+            code: "import random\nnum = random.randint(0, 2)\nprint(['rock', 'paper', 'scissors'][num])".to_string(),
+            wasm_path: "".to_string()
+        },
+        BotDetails {
+            run_type: BotRunType::Python,
+            name: "snippy".to_string(),
+            code: "print('scissors')".to_string(),
+            wasm_path: "".to_string()
+        },
+        BotDetails {
+            run_type: BotRunType::Python,
+            name: "booky".to_string(),
+            code: "print('paper')".to_string(),
+            wasm_path: "".to_string()
+        },
+        BotDetails {
+            run_type: BotRunType::Python,
+            name: "Randall".to_string(),
+            code: "import random\nnum = random.randint(0, 2)\nprint(['rock', 'paper', 'scissors'][num])".to_string(),
+            wasm_path: "".to_string()
+        },
+    ]
+}
+
+#[derive(Clone, Serialize)]
+pub enum MatchState {
+    NotStarted,
+    InProgress,
+    Bye,
+    Finished
+}
+
+#[derive(Clone, Serialize)]
+pub struct Match {
+    id: String,
+    tournament_round_text: String,
+    next_match_id: Option<String>,
+    participants: Vec<BotDetails>,
+    state: MatchState,
+}
+
+impl Match {
+    fn set_next_match_id(&mut self, next_match_id: String) {
+        self.next_match_id = Some(next_match_id);
+    }
+}
+
+#[derive(Clone, Serialize)]
+pub struct Tournament {
+    matches: Vec<Match>,
+}
+
+pub fn create_tournament() -> Result<Tournament> {
+    let bots = get_bots();
+    // Count from 1 to 30
+    let num_bots = bots.len() as u32;
+    let pow_two = 2_u32.pow(((num_bots as f32).log2()).ceil() as u32);
+    let byes = pow_two - num_bots;
+
+    let mut matches: Vec<Match> = vec![];
+
+    let match_bots = &bots[0..(bots.len() - byes as usize)];
+    let bye_bots = &bots[(bots.len() - byes as usize)..];
+
+    for i in 0..(match_bots.len() - 1) {
+        let bot1 = &match_bots[i];
+        let bot2 = &match_bots[i + 1];
+        let match_id = format!("{}-{}", bot1.name, bot2.name);
+        let new_match = Match {
+            id: match_id,
+            tournament_round_text: "Round 1".to_string(),
+            next_match_id: None,
+            participants: vec![bot1.clone(), bot2.clone()],
+            state: MatchState::NotStarted,
+        };
+        matches.push(new_match);
+    }
+    for i in 0..bye_bots.len() {
+        let bot = &bye_bots[i];
+        let match_id = format!("{}-bye", bot.name);
+        let new_match = Match {
+            id: match_id,
+            tournament_round_text: "Round 1".to_string(),
+            next_match_id: None,
+            participants: vec![bot.clone()],
+            state: MatchState::Bye,
+        };
+        matches.push(new_match);
+    }
+    let mut last_round_matches = matches;
+    let mut all_matches: Vec<Match> = vec![];
+    let mut round = 2;
+    while last_round_matches.len() >= 2 {
+        let mut new_matches: Vec<Match> = vec![];
+        for i in 0..(last_round_matches.len() / 2) {
+            let match1 = &last_round_matches[i * 2];
+            let match2 = &last_round_matches[i * 2 + 1];
+            let match_id = format!("{}-{}", match1.id, match2.id);
+            let new_match = Match {
+                id: match_id.clone(),
+                tournament_round_text: format!("Round {}", round),
+                next_match_id: None,
+                participants: vec![],
+                state: MatchState::NotStarted,
+            };
+            last_round_matches[i * 2].set_next_match_id(match_id.clone());
+            last_round_matches[i * 2 + 1].set_next_match_id(match_id);
+            new_matches.push(new_match);
+        }
+        all_matches.append(&mut last_round_matches);
+        last_round_matches = new_matches;
+        round += 1;
+    }
+    all_matches.append(&mut last_round_matches);
+    return Ok(Tournament { matches: all_matches });
 }
