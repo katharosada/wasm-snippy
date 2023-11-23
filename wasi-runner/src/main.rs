@@ -23,6 +23,7 @@ async fn main() {
     let app = Router::new()
         // `GET /` goes to `root`
         .route("/", get(root))
+        .route("/health", get(health))
         .route("/api/test", post(test_bot));
 
     // run our app with hyper
@@ -37,6 +38,10 @@ async fn main() {
 
 async fn root() -> &'static str {
     "Hello, World!"
+}
+
+async fn health() -> &'static str {
+    "Ok"
 }
 
 #[derive(Deserialize)]
