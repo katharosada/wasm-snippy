@@ -15,10 +15,8 @@ function SnippyLogo(props: { sx: any }) {
     <Typography
       variant="h6"
       noWrap
-      component="a"
-      href="#app-bar-with-responsive-menu"
       sx={{
-        fontFamily: 'monospace',
+        fontFamily: 'Roboto, Helvetica, Arial, sans-serif',
         fontWeight: 600,
         color: 'inherit',
         textDecoration: 'none',

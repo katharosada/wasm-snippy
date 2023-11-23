@@ -26,7 +26,8 @@
     "start": "vite",
     "build": "vite build",
     "lint": "eslint .",
-    "lint-fix": "eslint --fix ."
+    "lint-fix": "eslint --fix .",
+    "deploy": "yarn build && aws s3 sync dist/ s3://kb-static-site-hosting/snippy/"
   },
   "devDependencies": {
     "@typescript-eslint/eslint-plugin": "^6.11.0",
