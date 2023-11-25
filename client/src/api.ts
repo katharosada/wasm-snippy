@@ -1,5 +1,24 @@
 export interface ApiTournament {
-  matches: ApiMatch[]
+  starting_matches: ApiMatch[]
+  match_updates: ApiMatchOutcome[]
+}
+
+export type SPROutcome = 'Scissors' | 'Paper' | 'Rock' | 'Invalid'
+
+export interface ApiParticipantOutcome {
+  name: string
+  moves: SPROutcome[]
+  winner: boolean
+}
+
+export interface ApiMatchOutcome {
+  match_id: string
+  state: 'NotStarted' | 'InProgress' | 'Bye' | 'Finished'
+  winner: number
+  note?: string
+  participants: ApiParticipantOutcome[]
+  bot1_moves: SPROutcome[]
+  bot2_moves: SPROutcome[]
 }
 
 export interface ApiBotDetails {

@@ -2,6 +2,8 @@ use std::env;
 use std::fs;
 use std::str;
 use std::path::Path;
+use std::collections::HashMap;
+use rand::Rng;
 use wasmtime::*;
 use wasmtime_wasi::sync::WasiCtxBuilder;
 use wasi_common::pipe::ReadPipe;
@@ -11,12 +13,35 @@ use lazy_static::lazy_static;
 use serde::{Deserialize, Serialize};
 
 
-#[derive(Serialize)]
+#[derive(Serialize, Clone, PartialEq, Eq)]
 pub enum SPROption {
     Scissors = 0,
     Paper,
     Rock,
     Invalid
+}
+
+impl SPROption {
+    fn beats(&self, other: &SPROption) -> bool {
+        match self {
+            SPROption::Scissors => match other {
+                SPROption::Paper => true,
+                SPROption::Invalid => true,
+                _ => false
+            },
+            SPROption::Paper => match other {
+                SPROption::Rock => true,
+                SPROption::Invalid => true,
+                _ => false
+            },
+            SPROption::Rock => match other {
+                SPROption::Scissors => true,
+                SPROption::Invalid => true,
+                _ => false
+            },
+            _ => false
+        }
+    }
 }
 
 #[derive(Clone)]
@@ -274,10 +299,9 @@ fn get_bots() -> Vec<BotDetails> {
     ]
 }
 
-#[derive(Clone, Serialize)]
+#[derive(Clone, Serialize, Eq, PartialEq)]
 pub enum MatchState {
     NotStarted,
-    InProgress,
     Bye,
     Finished
 }
@@ -298,8 +322,128 @@ impl Match {
 }
 
 #[derive(Clone, Serialize)]
+pub struct ParticipantOutcome {
+    name: String,
+    moves: Vec<SPROption>,
+    winner: bool
+}
+
+#[derive(Clone, Serialize)]
+pub struct MatchOutcome {
+    match_id: String,
+    state: MatchState,
+    note: Option<String>,
+    winner: usize,
+    participants: Vec<ParticipantOutcome>,
+}
+
+#[derive(Clone, Serialize)]
 pub struct Tournament {
-    matches: Vec<Match>,
+    starting_matches: Vec<Match>,
+    match_updates: Vec<MatchOutcome>,
+}
+
+impl Tournament {
+    pub fn run(&mut self) -> Result<()> {
+        let mut match_participants: HashMap<String, Vec<BotDetails>> = self.starting_matches
+            .iter().map(|m| (m.id.clone(), m.participants.clone())).collect();
+
+        for this_match in &self.starting_matches {
+            let participant_outcomes: Vec<ParticipantOutcome> = match_participants.get(&this_match.id).unwrap().iter().map(|p| ParticipantOutcome {
+                name: p.name.clone(),
+                moves: vec![],
+                winner: true
+            }).collect();
+            let mut winner_bot = match_participants.get(&this_match.id).unwrap()[0].clone();
+            if this_match.state == MatchState::Bye {
+                self.match_updates.push(MatchOutcome {
+                    match_id: this_match.id.clone(),
+                    state: MatchState::Bye,
+                    winner: 0,
+                    note: Some("Bye".to_string()),
+                    participants: participant_outcomes
+                });
+            } else {
+                let participants = match_participants.get(&this_match.id).unwrap();
+                let match_outcome = run_match(
+                    &this_match.id, &participants[0], &participants[1])?;
+                winner_bot = participants[match_outcome.winner as usize].clone();
+                self.match_updates.push(match_outcome.clone());
+            }
+            // Add winner to participants for next match.
+            match &this_match.next_match_id {
+                Some(next_match_id) => {
+                    match_participants.get_mut(next_match_id).unwrap().push(winner_bot);
+                },
+                None => {
+                    // This is the final match
+                    println!("Winner: {}", winner_bot.name);
+                }
+            }
+        }
+        return Ok(())
+    }
+}
+
+fn run_match(match_id: &String, bot1: &BotDetails, bot2: &BotDetails) -> Result<MatchOutcome> {
+    // TODO: Generate stdin input and stop using the test function.
+    let mut bot1_moves: Vec<SPROption> = vec![];
+    let mut bot2_moves: Vec<SPROption> = vec![];
+
+    let mut winner_bot: Option<usize> = None;
+    for _i in 0..5 {
+        let bot1_result = test_bot(&bot1)?;
+        let bot2_result = test_bot(&bot2)?;
+        let bot1_play = bot1_result.result;
+        let bot2_play = bot2_result.result;
+        bot1_moves.push(bot1_play.clone());
+        bot2_moves.push(bot2_play.clone());
+        if bot1_play == bot2_play {
+            continue;
+        } else if bot1_play == SPROption::Invalid {
+            winner_bot = Some(1);
+            break
+        } else if bot1_play.beats(&bot2_play) {
+            winner_bot = Some(0);
+            break
+        } else {
+            winner_bot = Some(1);
+            break
+        }
+    }
+
+    let mut note: Option<String> = None;
+    let winner_bot = match winner_bot {
+        Some(winner_bot) => winner_bot,
+        None => {
+            note = Some("5x Draw. Winner chosen by coin toss.".to_string());
+            // 5 rounds resulted in a draw
+            // Choose random winner - number 0 or 1
+            let mut rng = rand::thread_rng();
+            rng.gen_range(0..2)
+        }
+    };
+
+    let participant_outcomes = vec![
+        ParticipantOutcome {
+            name: bot1.name.clone(),
+            moves: bot1_moves.clone(),
+            winner: winner_bot == 0
+        },
+        ParticipantOutcome {
+            name: bot2.name.clone(),
+            moves: bot2_moves.clone(),
+            winner: winner_bot == 1
+        }
+    ];
+
+    return Ok(MatchOutcome {
+        match_id: match_id.clone(),
+        state: MatchState::Finished,
+        winner: winner_bot,
+        note,
+        participants: participant_outcomes
+    })
 }
 
 pub fn create_tournament() -> Result<Tournament> {
@@ -320,7 +464,7 @@ pub fn create_tournament() -> Result<Tournament> {
         let match_id = format!("{}-{}", bot1.name, bot2.name);
         let new_match = Match {
             id: match_id,
-            tournament_round_text: "Round 1".to_string(),
+            tournament_round_text: "1".to_string(),
             next_match_id: None,
             participants: vec![bot1.clone(), bot2.clone()],
             state: MatchState::NotStarted,
@@ -332,7 +476,7 @@ pub fn create_tournament() -> Result<Tournament> {
         let match_id = format!("{}-bye", bot.name);
         let new_match = Match {
             id: match_id,
-            tournament_round_text: "Round 1".to_string(),
+            tournament_round_text: "1".to_string(),
             next_match_id: None,
             participants: vec![bot.clone()],
             state: MatchState::Bye,
@@ -350,7 +494,7 @@ pub fn create_tournament() -> Result<Tournament> {
             let match_id = format!("{}-{}", match1.id, match2.id);
             let new_match = Match {
                 id: match_id.clone(),
-                tournament_round_text: format!("Round {}", round),
+                tournament_round_text: round.to_string(),
                 next_match_id: None,
                 participants: vec![],
                 state: MatchState::NotStarted,
@@ -364,5 +508,5 @@ pub fn create_tournament() -> Result<Tournament> {
         round += 1;
     }
     all_matches.append(&mut last_round_matches);
-    return Ok(Tournament { matches: all_matches });
+    return Ok(Tournament { starting_matches: all_matches, match_updates: vec![] });
 }

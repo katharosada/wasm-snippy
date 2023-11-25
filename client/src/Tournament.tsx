@@ -7,12 +7,13 @@ export interface Party {
   id: number | string
   name?: string
   isWinner?: boolean
-  resultText?: string | null
+  resultText?: any // Actually it's string[] but the library API wants a string and it's not compatible.
 }
 
 export interface Match {
   id: number | string
   nextMatchId: number | string | null
+  tournamentRoundText?: string
   startTime: string
   state: string
   participants: Party[]

@@ -55,7 +55,16 @@ struct TestBotRequest {
 async fn create_tournament() -> Response {
     let result = tournament::create_tournament();
     match result {
-        Ok(payload) => (StatusCode::OK, Json(payload)).into_response(),
+        Ok(mut payload) => {
+            let result2 = payload.run();
+            match result2 {
+                Ok(_) => (StatusCode::OK, Json(payload)).into_response(),
+                Err(e) => {
+                    println!("Error: {}", e);
+                    return (StatusCode::INTERNAL_SERVER_ERROR, Json("Unexpected error occurred".to_string())).into_response();
+                }
+            }
+        }
         Err(e) => {
             println!("Error: {}", e);
             return (StatusCode::INTERNAL_SERVER_ERROR, Json("Unexpected error occurred".to_string())).into_response();
