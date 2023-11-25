@@ -11,6 +11,9 @@ const stateConverter = {
   Finished: 'DONE',
 }
 
+const websocketProtocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:'
+const websocketAddr = `${websocketProtocol}//${window.location.host}/api/ws`
+
 const convertToEmoji = (choices: SPROutcome[]): string[] => {
   const emojiList = choices.map((choice) => {
     switch (choice) {
@@ -64,7 +67,7 @@ function LiveTournamentPage() {
   }, [])
 
   useEffect(() => {
-    const new_sock = new WebSocket('ws://localhost:3000/api/ws')
+    const new_sock = new WebSocket(websocketAddr)
     setSock(new_sock)
     return () => {
       new_sock.close()
@@ -140,7 +143,7 @@ function LiveTournamentPage() {
         clearTimeout(ref)
       }
       const ref = setTimeout(() => {
-        setSock(new WebSocket('ws://localhost:3000/api/ws'))
+        setSock(new WebSocket(websocketAddr))
       }, 10000)
       timeoutsToClear.push(ref)
     }
