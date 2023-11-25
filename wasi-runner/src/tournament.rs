@@ -4,6 +4,7 @@ use std::str;
 use std::path::Path;
 use std::collections::HashMap;
 use rand::Rng;
+use tokio::sync::broadcast::Sender;
 use wasmtime::*;
 use wasmtime_wasi::sync::WasiCtxBuilder;
 use wasi_common::pipe::ReadPipe;
@@ -344,7 +345,7 @@ pub struct Tournament {
 }
 
 impl Tournament {
-    pub fn run(&mut self) -> Result<()> {
+    pub fn run(&mut self, sender: &Sender<String>) -> Result<()> {
         let mut match_participants: HashMap<String, Vec<BotDetails>> = self.starting_matches
             .iter().map(|m| (m.id.clone(), m.participants.clone())).collect();
 
@@ -356,18 +357,21 @@ impl Tournament {
             }).collect();
             let mut winner_bot = match_participants.get(&this_match.id).unwrap()[0].clone();
             if this_match.state == MatchState::Bye {
-                self.match_updates.push(MatchOutcome {
+                let match_out = MatchOutcome {
                     match_id: this_match.id.clone(),
                     state: MatchState::Bye,
                     winner: 0,
                     note: Some("Bye".to_string()),
                     participants: participant_outcomes
-                });
+                };
+                sender.send(serde_json::to_string(&match_out).unwrap()).unwrap();
+                self.match_updates.push(match_out);
             } else {
                 let participants = match_participants.get(&this_match.id).unwrap();
                 let match_outcome = run_match(
                     &this_match.id, &participants[0], &participants[1])?;
                 winner_bot = participants[match_outcome.winner as usize].clone();
+                sender.send(serde_json::to_string(&match_outcome).unwrap()).unwrap();
                 self.match_updates.push(match_outcome.clone());
             }
             // Add winner to participants for next match.

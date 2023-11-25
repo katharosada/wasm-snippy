@@ -17,7 +17,6 @@
     "react": "^18.2.0",
     "react-dom": "^18.2.0",
     "react-router-dom": "^6.19.0",
-    "socket.io-client": "^4.7.2",
     "styled-components": "^6.1.1",
     "typescript": "^5.2.2",
     "web-vitals": "^2.1.4"

@@ -1,8 +1,8 @@
 import './App.css'
-import { ApiTournament, SPROutcome } from './api'
+import { ApiMatchOutcome, ApiTournament, SPROutcome } from './api'
 import { Box, Typography } from '@mui/material'
 import { Match, Tournament } from './Tournament'
-import { useCallback, useState } from 'react'
+import { useCallback, useEffect, useState } from 'react'
 
 const stateConverter = {
   NotStarted: '',
@@ -53,39 +53,109 @@ function convertMatches(tournament: ApiTournament): Match[] {
 
 function LiveTournamentPage() {
   const [matches, setMatches] = useState(null as any)
+  const [sock, setSock] = useState(null as WebSocket | null)
 
   const runMatches = useCallback(() => {
-    fetch('/api/tournament', { method: 'POST' })
-      .then((response) => {
-        if (!response.ok) {
-          throw new Error(`HTTP error! status: ${response.status}`)
-        }
-        return response.json()
-      })
-      .then((json: ApiTournament) => {
-        setMatches(convertMatches(json))
-        setTimeout(() => {
-          for (const matchOutcome of json.match_updates) {
-            setMatches((matches: Match[]) => {
-              return matches.map((match) => {
-                if (match.id === matchOutcome.match_id) {
-                  match.state = stateConverter[matchOutcome.state]
-                  match.participants = matchOutcome.participants.map((participant) => {
-                    return {
-                      id: participant.name,
-                      name: participant.name,
-                      isWinner: participant.winner && match.state !== 'WALK_OVER',
-                      resultText: convertToEmoji(participant.moves),
-                    }
-                  })
-                }
-                return match
-              })
-            })
-          }
-        }, 1000)
-      })
+    fetch('/api/tournament', { method: 'POST' }).then((response) => {
+      if (!response.ok) {
+        throw new Error(`HTTP error! status: ${response.status}`)
+      }
+    })
   }, [])
+
+  useEffect(() => {
+    const new_sock = new WebSocket('ws://localhost:3000/api/ws')
+    setSock(new_sock)
+    return () => {
+      new_sock.close()
+    }
+  }, [])
+
+  useEffect(() => {
+    if (!sock) {
+      return
+    }
+    sock.onopen = () => {
+      console.log('websocket open')
+    }
+    const onmessage = (e: MessageEvent) => {
+      const json = JSON.parse(e.data)
+      if (!json) {
+        setMatches(null)
+      } else if (json['starting_matches']) {
+        // First message affter connection is the full tournament state.
+        const tournament = json as ApiTournament
+        setMatches(convertMatches(tournament))
+        for (const matchOutcome of tournament.match_updates) {
+          setMatches((matches: Match[]) => {
+            return matches.map((match) => {
+              if (match.id === matchOutcome.match_id) {
+                match.state = stateConverter[matchOutcome.state]
+                match.participants = matchOutcome.participants.map((participant) => {
+                  return {
+                    id: participant.name,
+                    name: participant.name,
+                    isWinner: participant.winner && match.state !== 'WALK_OVER',
+                    resultText: convertToEmoji(participant.moves),
+                  }
+                })
+              }
+              return match
+            })
+          })
+        }
+      } else {
+        // Other messages update specific match states.
+        const matchOutcome = json as ApiMatchOutcome
+        setMatches((matches: Match[]) => {
+          return matches.map((match) => {
+            if (match.id === matchOutcome.match_id) {
+              match.state = stateConverter[matchOutcome.state]
+              match.participants = matchOutcome.participants.map((participant) => {
+                return {
+                  id: participant.name,
+                  name: participant.name,
+                  isWinner: participant.winner && match.state !== 'WALK_OVER',
+                  resultText: convertToEmoji(participant.moves),
+                }
+              })
+            }
+            return match
+          })
+        })
+      }
+    }
+    const timeoutsToClear: number[] = []
+    const onerror = (e: Event) => {
+      console.log('Websocket error', e)
+      sock.close()
+    }
+    const onclose = (ev: CloseEvent) => {
+      console.log('Websocket closed')
+      console.log('Reconnecting in 10s')
+      sock.removeEventListener('close', onclose)
+      sock.close()
+      while (timeoutsToClear.length > 0) {
+        const ref = timeoutsToClear.pop()
+        clearTimeout(ref)
+      }
+      const ref = setTimeout(() => {
+        setSock(new WebSocket('ws://localhost:3000/api/ws'))
+      }, 10000)
+      timeoutsToClear.push(ref)
+    }
+    sock.addEventListener('message', onmessage)
+    sock.addEventListener('error', onerror)
+    sock.addEventListener('close', onclose)
+    return () => {
+      for (const ref of timeoutsToClear) {
+        clearTimeout(ref)
+      }
+      sock.removeEventListener('message', onmessage)
+      sock.removeEventListener('error', onerror)
+      sock.removeEventListener('close', onclose)
+    }
+  }, [sock])
 
   return (
     <Box pb={2}>
