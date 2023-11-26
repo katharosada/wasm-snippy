@@ -96,18 +96,6 @@ impl WasmRuntime {
     }
 }
 
-pub fn init() {
-    println!("Initializing WASM Runtime...");
-    let _ = test_bot(&BotDetails {
-        id: Some(1),
-        run_type: BotRunType::Python,
-        name: "test".to_string(),
-        code: "print(2)".to_string(),
-        wasm_path: "".to_string()
-    });
-    println!("Finished inititalising WASM Runtime");
-}
-
 #[derive(Serialize)]
 pub struct BotRunResult {
     pub stdin: String,
@@ -145,20 +133,38 @@ fn generate_test_input(bot_name: &String) -> String {
     serde_json::to_string(&input).unwrap()
 }
 
-pub fn test_bot(bot_details: &BotDetails) -> Result<BotRunResult> {
+// This one is syncrhonous because it's intended to be run in a blocking thread.
+pub fn run_bot(bot_details: &BotDetails) -> Result<BotRunResult> {
+    // TODO: Make this accept stdin input rather than generating test input.
     let input = generate_test_input(&bot_details.name);
     match bot_details.run_type {
         BotRunType::Wasi => {
-            return test_wasi_bot(bot_details, input);
+            return test_wasi_bot(&bot_details, input);
         },
         BotRunType::Python => {
-            return test_python_bot(bot_details, input);
+            return test_python_bot(&bot_details, input);
         }
     }
 }
 
+pub async fn test_bot(bot_details: &BotDetails) -> Result<BotRunResult> {
+    let bot_details = bot_details.clone();
+    let join = tokio::task::spawn_blocking(move || {
+        let input = generate_test_input(&bot_details.name);
+        match bot_details.run_type {
+            BotRunType::Wasi => {
+                return test_wasi_bot(&bot_details, input);
+            },
+            BotRunType::Python => {
+                return test_python_bot(&bot_details, input);
+            }
+        }    
+    });
+    return join.await?;
+}
+
 pub async fn add_bot(db_pool: &ConnectionPool, bot_details: &BotDetails) -> Result<u64> {
-    test_bot(&bot_details)?;
+    test_bot(&bot_details).await?;
 
     let conn = db_pool.get().await?;
     let stmt = conn.prepare("INSERT INTO bots (name, script_contents, run_type) VALUES ($1, $2, $3) ON CONFLICT DO NOTHING").await?;
@@ -192,7 +198,6 @@ fn trim_newlines<'a>(s: &'a str) -> &'a str {
 fn extract_result_from_stdout(stdout: &String) -> SPROption {
     let lines: Vec<&str> = trim_newlines(stdout).split("\n").collect();
     let last_line = *lines.last().unwrap_or(&"");
-    println!("Last line: {}", last_line);
     match last_line.to_lowercase().as_str() {
         "scissors" => SPROption::Scissors,
         "paper" => SPROption::Paper,
@@ -212,17 +217,14 @@ fn test_python_bot(bot_details: &BotDetails, input: String) -> Result<BotRunResu
     let stdout = WritePipe::new_in_memory();
     let stderr = WritePipe::new_in_memory();
 
-    println!("Creating tempdir");
     let temp_dir_path = env::temp_dir();
     let temp_dir = fs::File::open(temp_dir_path.clone())?;
     let main_py_path = temp_dir_path.join("main.py");
     fs::write(main_py_path, bot_details.code.as_bytes())?;
 
-    println!("Settingup WASI Dir");
     let root_dir = wasmtime_wasi::sync::Dir::from_std_file(temp_dir);
     let root_dir_internal_path = Path::new("/");
 
-    println!("Building WASI context");
     let wasi = WasiCtxBuilder::new()
         .args(&args)?
         .stdin(Box::new(stdin))
@@ -231,13 +233,10 @@ fn test_python_bot(bot_details: &BotDetails, input: String) -> Result<BotRunResu
         .preopened_dir(root_dir, root_dir_internal_path)?
         .build();
 
-    println!("Creating Store");
     let mut store = Store::new(&WASM_RUNTIME.engine, wasi);
     store.add_fuel(1_000_000_000)?;
 
-    println!("Linking modules");
     linker.module(&mut store, "", &WASM_RUNTIME.python_module)?;
-    println!("Running...");
     let start = Instant::now();
     let result = linker
         .get_default(&mut store, "")?
@@ -245,7 +244,7 @@ fn test_python_bot(bot_details: &BotDetails, input: String) -> Result<BotRunResu
         .call(&mut store, ());
 
     let duration = start.elapsed();
-    println!("Stopped after {}s", duration.as_secs_f32());
+    println!("Wasm stopped after {}s", duration.as_secs_f32());
     drop(store);
 
     let stdout_buf: Vec<u8> = stdout.try_into_inner().expect("sole remaining reference to WritePipe").into_inner();
@@ -306,7 +305,6 @@ async fn get_bots(db_pool: &ConnectionPool) -> Result<Vec<BotDetails>> {
             wasm_path: "".to_string()
         }
     }).collect();
-    println!("Bots: {:?}", &bots);
     return Ok(bots);
 }
 
@@ -314,6 +312,7 @@ async fn get_bots(db_pool: &ConnectionPool) -> Result<Vec<BotDetails>> {
 pub enum MatchState {
     NotStarted,
     Bye,
+    InProgress,
     Finished
 }
 
@@ -355,7 +354,14 @@ pub struct Tournament {
 }
 
 impl Tournament {
-    pub fn run(&mut self, sender: &Sender<String>) -> Result<()> {
+    pub fn new() -> Tournament {
+        Tournament {
+            starting_matches: vec![],
+            match_updates: vec![]
+        }
+    }
+
+    pub async fn run(&mut self, sender: Sender<String>) -> Result<()> {
         let mut match_participants: HashMap<String, Vec<BotDetails>> = self.starting_matches
             .iter().map(|m| (m.id.clone(), m.participants.clone())).collect();
 
@@ -363,8 +369,16 @@ impl Tournament {
             let participant_outcomes: Vec<ParticipantOutcome> = match_participants.get(&this_match.id).unwrap().iter().map(|p| ParticipantOutcome {
                 name: p.name.clone(),
                 moves: vec![],
-                winner: true
+                winner: false
             }).collect();
+            let in_progress_match_out = MatchOutcome {
+                match_id: this_match.id.clone(),
+                state: MatchState::InProgress,
+                winner: 0,
+                note: None,
+                participants: participant_outcomes.clone()
+            };
+            sender.send(serde_json::to_string(&in_progress_match_out).unwrap()).unwrap();
             let mut winner_bot = match_participants.get(&this_match.id).unwrap()[0].clone();
             if this_match.state == MatchState::Bye {
                 let match_out = MatchOutcome {
@@ -379,7 +393,7 @@ impl Tournament {
             } else {
                 let participants = match_participants.get(&this_match.id).unwrap();
                 let match_outcome = run_match(
-                    &this_match.id, &participants[0], &participants[1])?;
+                    &this_match.id, &participants[0], &participants[1]).await?;
                 winner_bot = participants[match_outcome.winner as usize].clone();
                 sender.send(serde_json::to_string(&match_outcome).unwrap()).unwrap();
                 self.match_updates.push(match_outcome.clone());
@@ -399,65 +413,73 @@ impl Tournament {
     }
 }
 
-fn run_match(match_id: &String, bot1: &BotDetails, bot2: &BotDetails) -> Result<MatchOutcome> {
-    // TODO: Generate stdin input and stop using the test function.
-    let mut bot1_moves: Vec<SPROption> = vec![];
-    let mut bot2_moves: Vec<SPROption> = vec![];
+async fn run_match(match_id: &String, bot1: &BotDetails, bot2: &BotDetails) -> Result<MatchOutcome> {
+    let match_id = match_id.clone();
+    let bot1 = bot1.clone();
+    let bot2 = bot2.clone();
 
-    let mut winner_bot: Option<usize> = None;
-    for _i in 0..5 {
-        let bot1_result = test_bot(&bot1)?;
-        let bot2_result = test_bot(&bot2)?;
-        let bot1_play = bot1_result.result;
-        let bot2_play = bot2_result.result;
-        bot1_moves.push(bot1_play.clone());
-        bot2_moves.push(bot2_play.clone());
-        if bot1_play == bot2_play {
-            continue;
-        } else if bot1_play == SPROption::Invalid {
-            winner_bot = Some(1);
-            break
-        } else if bot1_play.beats(&bot2_play) {
-            winner_bot = Some(0);
-            break
-        } else {
-            winner_bot = Some(1);
-            break
+    let join: tokio::task::JoinHandle<std::prelude::v1::Result<MatchOutcome, Error>> = tokio::task::spawn_blocking(move || {
+
+        let mut bot1_moves: Vec<SPROption> = vec![];
+        let mut bot2_moves: Vec<SPROption> = vec![];
+
+        let mut winner_bot: Option<usize> = None;
+        for _i in 0..5 {
+            // TODO: Generate stdin input and stop using the test function.
+            let bot1_result = run_bot(&bot1)?;
+            let bot2_result = run_bot(&bot2)?;
+            let bot1_play = bot1_result.result;
+            let bot2_play = bot2_result.result;
+            bot1_moves.push(bot1_play.clone());
+            bot2_moves.push(bot2_play.clone());
+            if bot1_play == bot2_play {
+                continue;
+            } else if bot1_play == SPROption::Invalid {
+                winner_bot = Some(1);
+                break
+            } else if bot1_play.beats(&bot2_play) {
+                winner_bot = Some(0);
+                break
+            } else {
+                winner_bot = Some(1);
+                break
+            }
         }
-    }
 
-    let mut note: Option<String> = None;
-    let winner_bot = match winner_bot {
-        Some(winner_bot) => winner_bot,
-        None => {
-            note = Some("5x Draw. Winner chosen by coin toss.".to_string());
-            // 5 rounds resulted in a draw
-            // Choose random winner - number 0 or 1
-            let mut rng = rand::thread_rng();
-            rng.gen_range(0..2)
-        }
-    };
+        let mut note: Option<String> = None;
+        let winner_bot = match winner_bot {
+            Some(winner_bot) => winner_bot,
+            None => {
+                note = Some("5x Draw. Winner chosen by coin toss.".to_string());
+                // 5 rounds resulted in a draw
+                // Choose random winner - number 0 or 1
+                let mut rng = rand::thread_rng();
+                rng.gen_range(0..2)
+            }
+        };
 
-    let participant_outcomes = vec![
-        ParticipantOutcome {
-            name: bot1.name.clone(),
-            moves: bot1_moves.clone(),
-            winner: winner_bot == 0
-        },
-        ParticipantOutcome {
-            name: bot2.name.clone(),
-            moves: bot2_moves.clone(),
-            winner: winner_bot == 1
-        }
-    ];
+        let participant_outcomes = vec![
+            ParticipantOutcome {
+                name: bot1.name.clone(),
+                moves: bot1_moves.clone(),
+                winner: winner_bot == 0
+            },
+            ParticipantOutcome {
+                name: bot2.name.clone(),
+                moves: bot2_moves.clone(),
+                winner: winner_bot == 1
+            }
+        ];
 
-    return Ok(MatchOutcome {
-        match_id: match_id.clone(),
-        state: MatchState::Finished,
-        winner: winner_bot,
-        note,
-        participants: participant_outcomes
-    })
+        return Ok(MatchOutcome {
+            match_id: match_id.clone(),
+            state: MatchState::Finished,
+            winner: winner_bot,
+            note,
+            participants: participant_outcomes
+        })
+    });
+    return join.await?;
 }
 
 pub async fn create_tournament(db_pool: &ConnectionPool) -> Result<Tournament> {

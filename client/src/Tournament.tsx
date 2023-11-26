@@ -52,7 +52,7 @@ export const Match = (props: { match: Match; topParty: Party; bottomParty: Party
 }
 
 export const Tournament = (props: { matches: Match[] }) => {
-  if (!props.matches) {
+  if (!props.matches || props.matches.length === 0) {
     return <div>No tournament running.</div>
   }
 

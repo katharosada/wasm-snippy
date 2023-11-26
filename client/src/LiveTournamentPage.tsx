@@ -2,7 +2,7 @@ import './App.css'
 import { ApiMatchOutcome, ApiTournament, SPROutcome } from './api'
 import { Box, Typography } from '@mui/material'
 import { Match, Tournament } from './Tournament'
-import { useCallback, useEffect, useState } from 'react'
+import { useEffect, useState } from 'react'
 
 const stateConverter = {
   NotStarted: '',
@@ -58,14 +58,6 @@ function convertMatches(tournament: ApiTournament): Match[] {
 function LiveTournamentPage() {
   const [matches, setMatches] = useState(null as any)
   const [sock, setSock] = useState(null as WebSocket | null)
-
-  const runMatches = useCallback(() => {
-    fetch('/api/tournament', { method: 'POST' }).then((response) => {
-      if (!response.ok) {
-        throw new Error(`HTTP error! status: ${response.status}`)
-      }
-    })
-  }, [])
 
   useEffect(() => {
     const new_sock = new WebSocket(websocketAddr)
@@ -167,8 +159,8 @@ function LiveTournamentPage() {
         <Typography variant="h3" component={'h2'} sx={{ py: 1, fontSize: '18pt' }}>
           Tournament
         </Typography>
+        <Typography sx={{ py: 1, fontSize: '12pt' }}>A new tournament starts automatically every minute.</Typography>
       </Box>
-      <button onClick={runMatches}>Run matches</button>
       <Tournament matches={matches} />
     </Box>
   )

@@ -7,15 +7,18 @@ use axum::{
     routing::{get, post},
     Router, http::StatusCode, Json,
 };
-use std::{net::SocketAddr, path::PathBuf, fs};
+use std::{net::SocketAddr, path::PathBuf, fs, time::Duration};
 use tower_http::{
     services::ServeDir,
     trace::{DefaultMakeSpan, TraceLayer},
 };
 
 use serde::Deserialize;
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
+use tokio::sync::RwLock;
 use tokio::sync::broadcast;
+use tokio::time;
+use tokio_stream::wrappers::IntervalStream;
 
 //allows to extract the IP of connecting user
 use axum::extract::connect_info::ConnectInfo;
@@ -38,10 +41,12 @@ mod tournament;
 pub type ConnectionPool = Pool;
 
 struct SharedState {
-    tournament: Mutex<Option<Tournament>>,
+    tournament: RwLock<Tournament>,
     broadcast_channel: broadcast::Sender<String>,
     db_pool: ConnectionPool,
 }
+
+const TOURNAMENT_INTERVAL: u64 = 30;
 
 #[tokio::main]
 async fn main() {
@@ -85,13 +90,10 @@ async fn main() {
 
     let (tx, _rx) = broadcast::channel(200);
     let shared_state: Arc<SharedState> = Arc::new(SharedState {
-        tournament: Mutex::new(None),
+        tournament: RwLock::new(Tournament::new()),
         broadcast_channel: tx,
         db_pool
     });
-
-    // Can call init to pre-warm the wasm runtime but it slows down startup.
-    tournament::init();
 
     // build our application with a route
     let app = Router::new()
@@ -102,8 +104,8 @@ async fn main() {
         .route("/health", get(health))
         .route("/api/test", post(test_bot))
         .route("/api/bot", post(post_bot))
-        .route("/api/tournament", post(create_tournament))
-        .with_state(shared_state)
+        // .route("/api/tournament", post(create_tournament))
+        .with_state(shared_state.clone())
         .layer(
             TraceLayer::new_for_http()
                 .make_span_with(DefaultMakeSpan::default().include_headers(true)),
@@ -113,10 +115,60 @@ async fn main() {
     // `axum::Server` is a re-export of `hyper::Server`
     let addr = SocketAddr::from(([0, 0, 0, 0], 3001));
     tracing::debug!("listening on {}", addr);
-    axum::Server::bind(&addr)
-        .serve(app.into_make_service_with_connect_info::<SocketAddr>())
-        .await
-        .unwrap();
+
+    tokio::select! {
+        res = axum::Server::bind(&addr)
+            .serve(app.into_make_service_with_connect_info::<SocketAddr>()) => {
+            match res {
+                Ok(_) => {},
+                Err(e) => {
+                    println!("Error: {}", e);
+                }
+            }
+        },
+        res = start_background_tournaments(shared_state) => {
+            match res {
+                Ok(_) => {},
+                Err(e) => {
+                    println!("Error: {}", e);
+                }
+            }
+        }
+    }
+}
+
+
+async fn start_background_tournaments(shared_state: Arc<SharedState>) -> Result<(), Box<dyn std::error::Error>> {
+    let mut stream = IntervalStream::new(time::interval(Duration::from_secs(TOURNAMENT_INTERVAL)));
+
+    while let Some(_ts) = stream.next().await {
+        println!("Starting new tournament.");
+        let result = tournament::create_tournament(&shared_state.db_pool).await;
+        match result {
+            Ok(payload) => {
+                let mut tournament = shared_state.tournament.write().await;
+                let tournament_json = serde_json::to_string(&payload.clone()).unwrap();
+                shared_state.broadcast_channel.send(tournament_json).unwrap();
+                *tournament = payload;
+
+                let sender = shared_state.broadcast_channel.clone();
+                let result2 = (*tournament).run(sender).await;
+                match result2 {
+                    Ok(_) => {},
+                    Err(e) => {
+                        return Err(e.into())
+                    }
+                }
+            }
+            Err(e) => {
+                println!("Error: {}", e);
+                return Err(e.into())
+            }
+        }
+        println!("Tournament done.");
+    }
+
+    return Ok(());
 }
 
 async fn root() -> &'static str {
@@ -170,31 +222,6 @@ async fn post_bot(State(shared_state): State<Arc<SharedState>>, Json(payload): J
     }
 }
 
-async fn create_tournament(State(shared_state): State<Arc<SharedState>>) -> Response {
-    let result = tournament::create_tournament(&shared_state.db_pool).await;
-    match result {
-        Ok(mut payload) => {
-            let mut tournament: std::sync::MutexGuard<'_, Option<Tournament>> = shared_state.tournament.lock().unwrap();
-            *tournament = Some(payload.clone());
-            let tournament_json = serde_json::to_string(&payload).unwrap();
-            shared_state.broadcast_channel.send(tournament_json).unwrap();
-            let result2 = payload.run(&shared_state.broadcast_channel);            
-            *tournament = Some(payload.clone());
-            match result2 {
-                Ok(_) => (StatusCode::OK).into_response(),
-                Err(e) => {
-                    println!("Error: {}", e);
-                    return (StatusCode::INTERNAL_SERVER_ERROR, Json("Unexpected error occurred".to_string())).into_response();
-                }
-            }
-        }
-        Err(e) => {
-            println!("Error: {}", e);
-            return (StatusCode::INTERNAL_SERVER_ERROR, Json("Unexpected error occurred".to_string())).into_response();
-        }
-    }
-}
-
 async fn test_bot(Json(payload): Json<TestBotRequest>) -> Response {
     let botcode = payload.botcode;
 
@@ -206,7 +233,7 @@ async fn test_bot(Json(payload): Json<TestBotRequest>) -> Response {
         wasm_path: "".to_string(),
     };
 
-    let result = tournament::test_bot(&bot);
+    let result = tournament::test_bot(&bot).await;
     match result {
         Ok(payload) => (StatusCode::OK, Json(payload)).into_response(),
         Err(e) => {
@@ -237,7 +264,7 @@ async fn handle_socket(socket: WebSocket, who: SocketAddr, state: Arc<SharedStat
     // Start recieveing updates
     let mut update_reciever = state.broadcast_channel.subscribe();
     
-    let tournament_json = match serde_json::to_string(&state.tournament) {
+    let tournament_json = match serde_json::to_string(&state.tournament.read().await.clone()) {
         Ok(json) => json,
         Err(e) => {
             println!("Error: {}", e);
