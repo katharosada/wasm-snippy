@@ -4,6 +4,7 @@ use std::str;
 use std::path::Path;
 use std::collections::HashMap;
 use rand::Rng;
+use rand::seq::SliceRandom;
 use tokio::sync::broadcast::Sender;
 use wasmtime::*;
 use wasmtime_wasi::sync::WasiCtxBuilder;
@@ -12,6 +13,8 @@ use wasi_common::pipe::WritePipe;
 use std::time::Instant;
 use lazy_static::lazy_static;
 use serde::{Deserialize, Serialize};
+
+use crate::ConnectionPool;
 
 
 #[derive(Serialize, Clone, PartialEq, Eq)]
@@ -45,15 +48,16 @@ impl SPROption {
     }
 }
 
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 #[derive(Deserialize, Serialize)]
 pub enum BotRunType {
     Wasi = 1,
     Python,
 }
 
-#[derive(Clone, Serialize)]
+#[derive(Clone, Serialize, Debug)]
 pub struct BotDetails {
+    pub id: Option<i32>,
     pub run_type: BotRunType,
     pub name: String,
     pub code: String,
@@ -95,6 +99,7 @@ impl WasmRuntime {
 pub fn init() {
     println!("Initializing WASM Runtime...");
     let _ = test_bot(&BotDetails {
+        id: Some(1),
         run_type: BotRunType::Python,
         name: "test".to_string(),
         code: "print(2)".to_string(),
@@ -150,6 +155,19 @@ pub fn test_bot(bot_details: &BotDetails) -> Result<BotRunResult> {
             return test_python_bot(bot_details, input);
         }
     }
+}
+
+pub async fn add_bot(db_pool: &ConnectionPool, bot_details: &BotDetails) -> Result<u64> {
+    test_bot(&bot_details)?;
+
+    let conn = db_pool.get().await?;
+    let stmt = conn.prepare("INSERT INTO bots (name, script_contents, run_type) VALUES ($1, $2, $3) ON CONFLICT DO NOTHING").await?;
+    let run_type: i32 = match bot_details.run_type {
+        BotRunType::Wasi => 1,
+        BotRunType::Python => 2
+    };
+    let count = conn.execute(&stmt, &[&bot_details.name, &bot_details.code, &run_type]).await?;
+    return Ok(count);
 }
 
 fn test_wasi_bot(bot_details: &BotDetails, input: String) -> Result<BotRunResult> {
@@ -265,39 +283,31 @@ fn test_python_bot(bot_details: &BotDetails, input: String) -> Result<BotRunResu
 }
 
 
-fn get_bots() -> Vec<BotDetails> {
-    return vec![
+async fn get_bots(db_pool: &ConnectionPool) -> Result<Vec<BotDetails>> {
+    let conn = db_pool.get().await?;
+    let stmt = conn.prepare("SELECT id, name, script_contents, run_type FROM bots").await?;
+
+    let rows = conn.query(&stmt, &[]).await?;
+    let bots: Vec<BotDetails> = rows.iter().map(|row| {
+        let id: i32 = row.get(0);
+        let name: String = row.get(1);
+        let script_contents: String = row.get(2);
+        let run_type: i32 = row.get(3);
+        let run_type = match run_type {
+            1 => BotRunType::Wasi,
+            2 => BotRunType::Python,
+            _ => BotRunType::Python
+        };
         BotDetails {
-            run_type: BotRunType::Python,
-            name: "rocky".to_string(),
-            code: "print('rock')".to_string(),
+            id: Some(id),
+            run_type,
+            name,
+            code: script_contents,
             wasm_path: "".to_string()
-        },
-        BotDetails {
-            run_type: BotRunType::Python,
-            name: "rando bot".to_string(),
-            code: "import random\nnum = random.randint(0, 2)\nprint(['rock', 'paper', 'scissors'][num])".to_string(),
-            wasm_path: "".to_string()
-        },
-        BotDetails {
-            run_type: BotRunType::Python,
-            name: "snippy".to_string(),
-            code: "print('scissors')".to_string(),
-            wasm_path: "".to_string()
-        },
-        BotDetails {
-            run_type: BotRunType::Python,
-            name: "booky".to_string(),
-            code: "print('paper')".to_string(),
-            wasm_path: "".to_string()
-        },
-        BotDetails {
-            run_type: BotRunType::Python,
-            name: "Randall".to_string(),
-            code: "import random\nnum = random.randint(0, 2)\nprint(['rock', 'paper', 'scissors'][num])".to_string(),
-            wasm_path: "".to_string()
-        },
-    ]
+        }
+    }).collect();
+    println!("Bots: {:?}", &bots);
+    return Ok(bots);
 }
 
 #[derive(Clone, Serialize, Eq, PartialEq)]
@@ -450,9 +460,10 @@ fn run_match(match_id: &String, bot1: &BotDetails, bot2: &BotDetails) -> Result<
     })
 }
 
-pub fn create_tournament() -> Result<Tournament> {
-    let bots = get_bots();
-    // Count from 1 to 30
+pub async fn create_tournament(db_pool: &ConnectionPool) -> Result<Tournament> {
+    let mut bots = get_bots(db_pool).await?;
+    bots.shuffle(&mut rand::thread_rng());
+
     let num_bots = bots.len() as u32;
     let pow_two = 2_u32.pow(((num_bots as f32).log2()).ceil() as u32);
     let byes = pow_two - num_bots;
@@ -462,7 +473,8 @@ pub fn create_tournament() -> Result<Tournament> {
     let match_bots = &bots[0..(bots.len() - byes as usize)];
     let bye_bots = &bots[(bots.len() - byes as usize)..];
 
-    for i in 0..(match_bots.len() - 1) {
+    // Create first round matches (pairs)
+    for i in (0..(match_bots.len() - 1)).step_by(2) {
         let bot1 = &match_bots[i];
         let bot2 = &match_bots[i + 1];
         let match_id = format!("{}-{}", bot1.name, bot2.name);
@@ -475,6 +487,8 @@ pub fn create_tournament() -> Result<Tournament> {
         };
         matches.push(new_match);
     }
+
+    // Create 'bye' matches.
     for i in 0..bye_bots.len() {
         let bot = &bye_bots[i];
         let match_id = format!("{}-bye", bot.name);

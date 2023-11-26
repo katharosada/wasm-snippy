@@ -31,6 +31,7 @@ const convertToEmoji = (choices: SPROutcome[]): string[] => {
 }
 
 function convertMatches(tournament: ApiTournament): Match[] {
+  console.log(tournament)
   const matches = tournament.starting_matches.map((apiMatch) => {
     const participants = apiMatch.participants.map((participant) => {
       return {

@@ -46,8 +46,13 @@ Then there's a script to create the necessary tables and populate it with some s
 This is for local development only.
 
 ```sh
-cd server/
-psql snippy < setup.sql
+psql snippy < wasi-runner/setup.sql
+```
+
+In the `wasi-runner` folder, create a file called `.env` with the following contents.
+
+```
+DATABASE_URL="postgres://snippyuser:snippy123@localhost:5432/snippy"
 ```
 
 ### Build and run the server

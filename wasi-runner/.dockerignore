@@ -1,5 +1,6 @@
 docker-compose.yaml
 target
+.env
 
 **/*.rs.bk
 .vscode

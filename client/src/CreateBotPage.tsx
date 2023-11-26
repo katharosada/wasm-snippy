@@ -1,5 +1,6 @@
 import Box from '@mui/material/Box'
 import Button from '@mui/material/Button'
+import CreateBotModal from './CreateBotModal'
 import ExpandMoreIcon from '@mui/icons-material/ExpandMore'
 import React, { FormEvent, useCallback, useEffect } from 'react'
 import { Accordion, AccordionDetails, AccordionSummary, Link, Typography } from '@mui/material'
@@ -46,6 +47,9 @@ function CreateBotPage() {
   const [content, setContent] = React.useState(startingCode)
   const [testing, setTesting] = React.useState(false)
   const [testResults, setTestResults] = React.useState(null as TestResults | null)
+  const [open, setOpen] = React.useState(false)
+  const handleOpen = () => setOpen(true)
+  const handleClose = () => setOpen(false)
 
   useEffect(() => {
     const code = localStorage.getItem('code')
@@ -62,15 +66,13 @@ function CreateBotPage() {
 
   const onSubmit = (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault()
-    const formData = new FormData(event.target as HTMLFormElement)
-    const botname = formData.get('botname') || 'My Bot'
     const runType = 'Python'
     setTesting(true)
     setTestResults(null)
     fetch('/api/test', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ botname, botcode: content, run_type: runType }),
+      body: JSON.stringify({ botcode: content, run_type: runType }),
     })
       .then((response) => {
         setTesting(false)
@@ -98,6 +100,7 @@ function CreateBotPage() {
 
   return (
     <Box pb={2}>
+      <CreateBotModal open={open} handleClose={handleClose} content={content} />
       <Box py={2}>
         <Typography variant="h3" component={'h2'} sx={{ py: 1, fontSize: '18pt' }}>
           Create a Scissors-Paper-Rock bot
@@ -170,10 +173,13 @@ function CreateBotPage() {
       <Editor language={SupportedLanguage.PYTHON} initialContent={startingCode} onEdit={onEdit} />
       <Box py={2}>
         <form onSubmit={onSubmit}>
-          {/* <TextField id="botname" name="botname" placeholder="Bot Name" defaultValue={''} variant="outlined" /> */}
           <div>
             <Button variant="contained" type="submit" disabled={testing}>
               &nbsp;Test&nbsp;
+            </Button>
+            &nbsp;
+            <Button onClick={handleOpen} variant="contained" color="secondary">
+              Enter the Tournament
             </Button>
           </div>
         </form>
