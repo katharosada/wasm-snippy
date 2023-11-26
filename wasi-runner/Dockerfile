@@ -1,19 +1,15 @@
-FROM rust:latest AS builder
+FROM rust:alpine3.17 AS builder
 
-RUN rustup target add x86_64-unknown-linux-musl
-RUN apt update && apt install -y musl-tools musl-dev
-RUN apt-get install -y build-essential
-RUN yes | apt install gcc-x86-64-linux-gnu
+RUN apk add libressl-dev musl-dev
 
 WORKDIR /app
-
 COPY ./ .
-ENV RUSTFLAGS='-C linker=x86_64-linux-gnu-gcc'
-RUN cargo build --target x86_64-unknown-linux-musl --release
+RUN cargo build --release
 
-FROM alpine
+FROM alpine:3.17
 EXPOSE 3001
 WORKDIR /app
-COPY --from=builder /app/target/x86_64-unknown-linux-musl/release/wasi-runner ./
+COPY --from=builder /app/database_cert.pem ./
+COPY --from=builder /app/target/release/wasi-runner ./
 COPY --from=builder /app/*.wasm ./
 CMD ["./wasi-runner"]

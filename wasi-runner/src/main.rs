@@ -7,7 +7,7 @@ use axum::{
     routing::{get, post},
     Router, http::StatusCode, Json,
 };
-use std::{net::SocketAddr, path::PathBuf};
+use std::{net::SocketAddr, path::PathBuf, fs};
 use tower_http::{
     services::ServeDir,
     trace::{DefaultMakeSpan, TraceLayer},
@@ -17,8 +17,6 @@ use serde::Deserialize;
 use std::sync::{Arc, Mutex};
 use tokio::sync::broadcast;
 
-use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
-
 //allows to extract the IP of connecting user
 use axum::extract::connect_info::ConnectInfo;
 
@@ -27,16 +25,17 @@ use futures::{sink::SinkExt, stream::StreamExt};
 
 use tournament::{BotDetails, BotRunType, Tournament};
 
-use bb8::Pool;
-use bb8_postgres::PostgresConnectionManager;
 use tokio_postgres::NoTls;
+use native_tls::{TlsConnector, Certificate};
+use postgres_native_tls::MakeTlsConnector;
+use deadpool_postgres::{Config, ManagerConfig, Pool, RecyclingMethod, Runtime};
 
 use std::env;
 use dotenvy::dotenv;
 
 mod tournament;
 
-pub type ConnectionPool = Pool<PostgresConnectionManager<NoTls>>;
+pub type ConnectionPool = Pool;
 
 struct SharedState {
     tournament: Mutex<Option<Tournament>>,
@@ -49,26 +48,42 @@ async fn main() {
     // Load .env file
     dotenv().ok();
 
-    // initialize tracing
-    tracing_subscriber::registry()
-        .with(
-            tracing_subscriber::EnvFilter::try_from_default_env()
-                .unwrap_or_else(|_| "wasi-runner=debug".into()),
-        )
-        .with(tracing_subscriber::fmt::layer())
-        .init();
-
     let assets_dir: PathBuf = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("assets");
 
-    // Set up DB connection pool
-    let config: tokio_postgres::Config = env::var("DATABASE_URL")
-        .expect("DATABASE_URL must be set")
-        .parse()
-        .expect("DATABASE_URL must be a valid postgresql connection string");
-    let manager = PostgresConnectionManager::new(config, NoTls);
-    let db_pool = Pool::builder().build(manager).await.unwrap();
+    let db_host = env::var("DB_HOST").unwrap_or("localhost".to_string());
+    let db_port: u16 = env::var("DB_PORT").unwrap_or("5432".to_string()).parse().expect("DB_PORT must be a valid integer.");
+    let db_name = env::var("DB_NAME").unwrap_or("snippy".to_string());
+    let db_user = env::var("DB_USER").unwrap_or("snippyuser".to_string());
+    let db_password = env::var("DB_PASSWORD").unwrap_or("".to_string());
 
-    let (tx, _rx) = broadcast::channel(100);
+    let mut config = Config::new();
+    config.host = Some(db_host);
+    config.port = Some(db_port);
+    config.dbname = Some(db_name);
+    config.user = Some(db_user);
+    config.password = Some(db_password);
+    config.manager = Some(ManagerConfig { recycling_method: RecyclingMethod::Fast });
+
+    let database_cert_path = env::var("DATABASE_CERT_PATH").unwrap_or("database_cert.pem".to_string());
+
+    let cert_read= fs::read(&database_cert_path);
+    let db_pool: ConnectionPool  = match cert_read {
+        Ok(cert) => {
+            let cert = Certificate::from_pem(&cert).expect("Reading certificate failed.");
+            let connector = TlsConnector::builder()
+                .add_root_certificate(cert)
+                .danger_accept_invalid_hostnames(true)
+                .build().expect("Failed to build TLS connector.");
+            let connector = MakeTlsConnector::new(connector);
+            config.create_pool(Some(Runtime::Tokio1), connector).unwrap()
+        },
+        Err(e) => {
+            println!("Warning: Cannot read database certificate at path {} ({}). Defaulting to not using TLS.", database_cert_path, e);
+            config.create_pool(Some(Runtime::Tokio1), NoTls).unwrap()
+        }
+    };
+
+    let (tx, _rx) = broadcast::channel(200);
     let shared_state: Arc<SharedState> = Arc::new(SharedState {
         tournament: Mutex::new(None),
         broadcast_channel: tx,
