@@ -147,22 +147,11 @@ function CreateBotPage() {
             <pre>
               {`{
   "botname": "My Bot",     // This is your own bot's name
-  "round": 1,              // Round number for this battle, starting at 0. E.g. 1 if the first round was a draw.
+  "round": 2,              // Round number for this battle, starting at 0. E.g. 2 for the third round.
   "opponent": "RandomBot", // Opponent's name
-  "opponent_history": [    // The choices this opponent has made in the past, including previous rounds in this this battle.
-    {
-      "round": 0,
-      "play": "scissors",
-      "opponent": "RandomBot",
-      "opponent_play": "scissors"
-    },
-    {
-      "round": 0,
-      "play": "paper",
-      "opponent": "Rocky",
-      "opponent_play": "rock"
-    },
-    ...
+  "history": [             // The plays previously made by the opponent during this battle.
+    "scissors",
+    "rock"
   ]
 }`}
             </pre>

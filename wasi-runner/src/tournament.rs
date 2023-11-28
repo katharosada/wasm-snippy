@@ -119,30 +119,29 @@ pub struct BotRunInput {
     botname: String,
     opponent: String,
     round: u32,
-    opponent_history: Vec<BotMatchOutcome>
+    history: Vec<SPROption>,
 }
 
-fn generate_test_input(bot_name: &String) -> String {
+fn generate_test_input(bot_name: &String, opponent_name: &String, history: &Vec<SPROption>) -> String {
     let input = BotRunInput {
         botname: bot_name.clone(),
-        opponent: "test".to_string(),
-        round: 0,
-        opponent_history: vec![]
+        opponent: opponent_name.clone(),
+        round: history.len() as u32,
+        history: history.clone(),
     };
 
     serde_json::to_string(&input).unwrap()
 }
 
 // This one is syncrhonous because it's intended to be run in a blocking thread.
-pub fn run_bot(bot_details: &BotDetails) -> Result<BotRunResult> {
-    // TODO: Make this accept stdin input rather than generating test input.
-    let input = generate_test_input(&bot_details.name);
+pub fn run_bot(bot_details: &BotDetails, opponent_name: &String, history: &Vec<SPROption>) -> Result<BotRunResult> {
+    let input = generate_test_input(&bot_details.name, opponent_name, &history);
     match bot_details.run_type {
         BotRunType::Wasi => {
-            return test_wasi_bot(&bot_details, input);
+            return run_wasi_bot(&bot_details, input);
         },
         BotRunType::Python => {
-            return test_python_bot(&bot_details, input);
+            return run_python_bot(&bot_details, input);
         }
     }
 }
@@ -150,15 +149,17 @@ pub fn run_bot(bot_details: &BotDetails) -> Result<BotRunResult> {
 pub async fn test_bot(bot_details: &BotDetails) -> Result<BotRunResult> {
     let bot_details = bot_details.clone();
     let join = tokio::task::spawn_blocking(move || {
-        let input = generate_test_input(&bot_details.name);
+        let test_history = vec![SPROption::Rock, SPROption::Scissors];
+        let test_opponent = "testbot".to_string();
+        let input = generate_test_input(&bot_details.name, &test_opponent, &test_history);
         match bot_details.run_type {
             BotRunType::Wasi => {
-                return test_wasi_bot(&bot_details, input);
+                return run_wasi_bot(&bot_details, input);
             },
             BotRunType::Python => {
-                return test_python_bot(&bot_details, input);
+                return run_python_bot(&bot_details, input);
             }
-        }    
+        }
     });
     return join.await?;
 }
@@ -176,7 +177,7 @@ pub async fn add_bot(db_pool: &ConnectionPool, bot_details: &BotDetails) -> Resu
     return Ok(count);
 }
 
-fn test_wasi_bot(bot_details: &BotDetails, input: String) -> Result<BotRunResult> {
+fn run_wasi_bot(bot_details: &BotDetails, input: String) -> Result<BotRunResult> {
     println!("Running WASI bot, path: {}", bot_details.wasm_path);
     Ok(BotRunResult {
         stdin: input,
@@ -206,7 +207,7 @@ fn extract_result_from_stdout(stdout: &String) -> SPROption {
     }
 }
 
-fn test_python_bot(bot_details: &BotDetails, input: String) -> Result<BotRunResult> {
+fn run_python_bot(bot_details: &BotDetails, input: String) -> Result<BotRunResult> {
     let mut linker = Linker::new(&WASM_RUNTIME.engine);
     wasmtime_wasi::add_to_linker(&mut linker, |s| s)?;
 
@@ -426,13 +427,17 @@ async fn run_match(match_id: &String, bot1: &BotDetails, bot2: &BotDetails) -> R
         let mut winner_bot: Option<usize> = None;
         for _i in 0..5 {
             // TODO: Generate stdin input and stop using the test function.
-            let bot1_result = run_bot(&bot1)?;
-            let bot2_result = run_bot(&bot2)?;
+            let bot1_result = run_bot(&bot1, &bot2.name,&bot1_moves)?;
+            let bot2_result = run_bot(&bot2, &bot1.name, &bot1_moves)?;
             let bot1_play = bot1_result.result;
             let bot2_play = bot2_result.result;
             bot1_moves.push(bot1_play.clone());
             bot2_moves.push(bot2_play.clone());
             if bot1_play == bot2_play {
+                // Both invalid, no one wins.
+                if bot1_play == SPROption::Invalid {
+                    break;
+                }
                 continue;
             } else if bot1_play == SPROption::Invalid {
                 winner_bot = Some(1);
