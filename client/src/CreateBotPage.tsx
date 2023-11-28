@@ -150,8 +150,8 @@ function CreateBotPage() {
   "round": 2,              // Round number for this battle, starting at 0. E.g. 2 for the third round.
   "opponent": "RandomBot", // Opponent's name
   "history": [             // The plays previously made by the opponent during this battle.
-    "scissors",
-    "rock"
+    "Scissors",            // Note the capitalisation.
+    "Rock"
   ]
 }`}
             </pre>
