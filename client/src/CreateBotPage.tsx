@@ -3,6 +3,7 @@ import Button from '@mui/material/Button'
 import CreateBotModal from './CreateBotModal'
 import ExpandMoreIcon from '@mui/icons-material/ExpandMore'
 import React, { FormEvent, useCallback, useEffect } from 'react'
+import UploadWasmModal from './UploadWasmModal'
 import { Accordion, AccordionDetails, AccordionSummary, Link, Typography } from '@mui/material'
 import { Editor, SupportedLanguage } from './Editor'
 
@@ -50,6 +51,10 @@ function CreateBotPage() {
   const [open, setOpen] = React.useState(false)
   const handleOpen = () => setOpen(true)
   const handleClose = () => setOpen(false)
+
+  const [uploadOpen, setUploadOpen] = React.useState(false)
+  const handleUploadOpen = () => setUploadOpen(true)
+  const handleUploadClose = () => setUploadOpen(false)
 
   useEffect(() => {
     const code = localStorage.getItem('code')
@@ -101,6 +106,7 @@ function CreateBotPage() {
   return (
     <Box pb={2}>
       <CreateBotModal open={open} handleClose={handleClose} content={content} />
+      <UploadWasmModal open={uploadOpen} handleClose={handleUploadClose} />
       <Box py={2}>
         <Typography variant="h3" component={'h2'} sx={{ py: 1, fontSize: '18pt' }}>
           Create a Scissors-Paper-Rock bot
@@ -158,7 +164,20 @@ function CreateBotPage() {
           </AccordionDetails>
         </Accordion>
       </Box>
-
+      <Typography variant="h3" component={'h2'} sx={{ py: 1, fontSize: '18pt' }}>
+        Upload a WebAssembly bot
+      </Typography>
+      <Typography py={1}>
+        {`Use any any programming language, so long as you can compile it to a single .wasm file (WebAssembly with WASI bindings). See the `}
+        <a href="https://github.com/katharosada/wasm-snippy/tree/main/sample-bots">example bots with instructions</a>.
+      </Typography>
+      <Button variant="contained" color="secondary" onClick={handleUploadOpen}>
+        Enter with a .wasm file
+      </Button>
+      <Typography variant="h3" sx={{ pt: 2, pb: 1, fontSize: '14pt', fontWeight: 400 }}>
+        {`Or submit a Python script instead`}
+      </Typography>
+      <Typography py={1}>{`Python scripts will be executed using CPython 3.11 compiled to WebAssembly.`}</Typography>
       <Editor language={SupportedLanguage.PYTHON} initialContent={startingCode} onEdit={onEdit} />
       <Box py={2}>
         <form onSubmit={onSubmit}>

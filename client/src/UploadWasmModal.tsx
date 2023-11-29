@@ -1,5 +1,5 @@
 import { Box, Button, Modal, TextField, Typography } from '@mui/material'
-import { FormEvent, useState } from 'react'
+import { FormEvent, useRef, useState } from 'react'
 
 const style = {
   position: 'absolute' as const,
@@ -12,22 +12,22 @@ const style = {
   p: 4,
 }
 
-export default function CreateBotModal(props: { open: boolean; handleClose: () => void; content: string }) {
-  const { open, handleClose, content } = props
+export default function UploadWasmModal(props: { open: boolean; handleClose: () => void }) {
+  const { open, handleClose } = props
   const [submitting, setSubmitting] = useState(false)
   const [error, setError] = useState(null as string | null)
+  const [selectedFileName, setSelectedFileName] = useState(null as string | null)
+  const uploadInputElement = useRef<HTMLInputElement | null>(null)
 
   const onSubmit = (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault()
     const formData = new FormData(event.target as HTMLFormElement)
-    const botname = formData.get('botname') as string
-    const runType = 'Python'
+    // formData.append('file', uploadInputElement.current?.files?.[0] as File)
     setSubmitting(true)
     setError(null)
-    fetch('/api/bot', {
+    fetch('/api/upload_wasm', {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ name: botname, botcode: content, run_type: runType }),
+      body: formData,
     }).then((response) => {
       if (response.ok) {
         console.log(response)
@@ -41,6 +41,10 @@ export default function CreateBotModal(props: { open: boolean; handleClose: () =
       }
       setSubmitting(false)
     })
+  }
+
+  const handleselectedFile = (event: any) => {
+    setSelectedFileName(event.target.files[0].name)
   }
 
   return (
@@ -59,6 +63,23 @@ export default function CreateBotModal(props: { open: boolean; handleClose: () =
             Bot names must be unique.
           </Typography>
           <TextField id="botname" name="botname" placeholder="Bot Name" defaultValue={''} variant="outlined" />
+          <br />
+          <input
+            ref={uploadInputElement}
+            accept="*/*"
+            className={''}
+            style={{ display: 'none' }}
+            id="raised-button-file"
+            name="wasm_file"
+            type="file"
+            onChange={handleselectedFile}
+          />
+          <p style={{ fontFamily: 'monospace', fontSize: '12pt' }}>{selectedFileName}</p>
+          <label htmlFor="raised-button-file">
+            <Button variant="contained" component="span">
+              {selectedFileName ? 'Change file' : 'Select file'}
+            </Button>
+          </label>
           <br />
           <Typography sx={{ mt: 2, color: 'red' }}>{error}&nbsp;</Typography>
           <Button type="submit" variant="contained" color="secondary" disabled={submitting}>

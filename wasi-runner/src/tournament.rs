@@ -13,6 +13,10 @@ use wasi_common::pipe::WritePipe;
 use std::time::Instant;
 use lazy_static::lazy_static;
 use serde::{Deserialize, Serialize};
+use aws_config::BehaviorVersion;
+use aws_sdk_s3::primitives::ByteStream;
+use aws_sdk_s3::Client as S3Client;
+
 
 use crate::ConnectionPool;
 
@@ -62,6 +66,7 @@ pub struct BotDetails {
     pub name: String,
     pub code: String,
     pub wasm_path: String,
+    pub wasm_bytes: Option<Vec<u8>>,
 }
 
 pub struct WasmRuntime {
@@ -164,21 +169,119 @@ pub async fn test_bot(bot_details: &BotDetails) -> Result<BotRunResult> {
     return join.await?;
 }
 
-pub async fn add_bot(db_pool: &ConnectionPool, bot_details: &BotDetails) -> Result<u64> {
-    test_bot(&bot_details).await?;
+pub async fn add_bot(db_pool: &ConnectionPool, bucket_name: &String, bot_details: &mut BotDetails, test: bool) -> Result<u64> {
+    if test {
+        test_bot(&bot_details).await?;
+    }
+
+    let wasm_path = match bot_details.wasm_bytes.clone() {
+        None => bot_details.wasm_path.clone(),
+        Some(bytes) => {
+            // Upload to S3
+            save_bot_code(&bucket_name, bytes).await?
+        }
+    };
+
+    bot_details.wasm_path = wasm_path.clone();
 
     let conn = db_pool.get().await?;
-    let stmt = conn.prepare("INSERT INTO bots (name, script_contents, run_type) VALUES ($1, $2, $3) ON CONFLICT DO NOTHING").await?;
+    let stmt = conn.prepare("INSERT INTO bots (name, script_contents, run_type, wasm_path) VALUES ($1, $2, $3, $4) ON CONFLICT DO NOTHING").await?;
     let run_type: i32 = match bot_details.run_type {
         BotRunType::Wasi => 1,
         BotRunType::Python => 2
     };
-    let count = conn.execute(&stmt, &[&bot_details.name, &bot_details.code, &run_type]).await?;
+    let count = conn.execute(&stmt, &[&bot_details.name, &bot_details.code, &run_type, &bot_details.wasm_path]).await?;
     return Ok(count);
 }
 
 fn run_wasi_bot(bot_details: &BotDetails, input: String) -> Result<BotRunResult> {
     println!("Running WASI bot, path: {}", bot_details.wasm_path);
+    let mut linker = Linker::new(&WASM_RUNTIME.engine);
+    wasmtime_wasi::add_to_linker(&mut linker, |s| s)?;
+
+    let args: &[String] = &["wasmbot".to_string()];
+
+    let stdin = ReadPipe::from(input.clone());
+    let stdout = WritePipe::new_in_memory();
+    let stderr = WritePipe::new_in_memory();
+
+    let wasi = WasiCtxBuilder::new()
+        .args(&args)?
+        .stdin(Box::new(stdin))
+        .stdout(Box::new(stdout.clone()))
+        .stderr(Box::new(stderr.clone()))
+        .build();
+
+    let mut store = Store::new(&WASM_RUNTIME.engine, wasi);
+    store.add_fuel(1_000_000_000)?;
+
+    match bot_details.wasm_bytes.clone() {
+        None => {
+
+        },
+        Some(bytes) => {
+            let module = match Module::new(&WASM_RUNTIME.engine, &bytes) {
+                Ok(module) => module,
+                Err(e) => {
+                    println!("Error loading module: {}", e);
+                    return Ok(BotRunResult {
+                        stdin: input,
+                        stdout: "".to_string(),
+                        stderr: "".to_string(),
+                        duration: 0.0,
+                        result: SPROption::Invalid,
+                        invalid_reason: Some("Error loading wasm module".to_string()),
+                    });
+                }
+            };
+            
+            linker.module(&mut store, "", &module)?;
+            let start = Instant::now();
+            let result = linker
+                .get_default(&mut store, "")?
+                .typed::<(), ()>(&store)?
+                .call(&mut store, ());
+        
+            let duration = start.elapsed();
+            println!("Wasm stopped after {}s", duration.as_secs_f32());
+            drop(store);
+        
+            let stdout_buf: Vec<u8> = stdout.try_into_inner().expect("sole remaining reference to WritePipe").into_inner();
+            let stdout_str = String::from_utf8_lossy(&stdout_buf).to_string();
+        
+            let stderr_buf: Vec<u8> = stderr.try_into_inner().expect("sole remaining reference to WritePipe").into_inner();
+            
+            let stderr_str = String::from_utf8_lossy(&stderr_buf).to_string();
+        
+        
+            if result.is_err() {
+                println!("Error running wasm bot.");
+                return Ok(BotRunResult{
+                    stdin: input,
+                    stdout: stdout_str,
+                    stderr: stderr_str,
+                    duration: duration.as_secs_f32(),
+                    result: SPROption::Invalid,
+                    invalid_reason: Some("Program did not exit successfully.".to_string())
+                })
+            }
+            let bot_result = extract_result_from_stdout(&stdout_str);
+            let invalid_reason = match bot_result {
+                SPROption::Invalid => Some("Program did not print a valid play on the last line.".to_string()),
+                _ => None  
+            };
+            return Ok(BotRunResult{
+                stdin: input,
+                stdout: stdout_str,
+                stderr: stderr_str,
+                duration: duration.as_secs_f32(),
+                result: bot_result,
+                invalid_reason: invalid_reason
+            });
+
+        }
+    }
+
     Ok(BotRunResult {
         stdin: input,
         stdout: "".to_string(),
@@ -283,16 +386,21 @@ fn run_python_bot(bot_details: &BotDetails, input: String) -> Result<BotRunResul
 }
 
 
-async fn get_bots(db_pool: &ConnectionPool) -> Result<Vec<BotDetails>> {
+async fn get_bots(db_pool: &ConnectionPool, bucket_name: &String) -> Result<Vec<BotDetails>> {
     let conn = db_pool.get().await?;
-    let stmt = conn.prepare("SELECT id, name, script_contents, run_type FROM bots").await?;
+    let stmt = conn.prepare("SELECT id, name, script_contents, run_type, wasm_path FROM bots").await?;
+
+    let shared_config = aws_config::load_defaults(BehaviorVersion::v2023_11_09()).await;
+    let client = S3Client::new(&shared_config);
 
     let rows = conn.query(&stmt, &[]).await?;
-    let bots: Vec<BotDetails> = rows.iter().map(|row| {
+    let mut bots: Vec<BotDetails> = rows.iter().map(|row| {
         let id: i32 = row.get(0);
         let name: String = row.get(1);
         let script_contents: String = row.get(2);
         let run_type: i32 = row.get(3);
+        let wasm_path: String = row.get(4);
+       
         let run_type = match run_type {
             1 => BotRunType::Wasi,
             2 => BotRunType::Python,
@@ -303,9 +411,30 @@ async fn get_bots(db_pool: &ConnectionPool) -> Result<Vec<BotDetails>> {
             run_type,
             name,
             code: script_contents,
-            wasm_path: "".to_string()
+            wasm_path,
+            wasm_bytes: None
         }
     }).collect();
+    
+    for bot in &mut bots {
+        let wasm_path = &bot.wasm_path;
+        let wasm_bytes: Option<Vec<u8>> = match wasm_path.is_empty() {
+            true => { None },
+            false => {
+                let result = client
+                    .get_object()
+                    .bucket(bucket_name)
+                    .key(wasm_path)
+                    .send()
+                    .await?;
+                
+                let bytes = result.body.collect().await?.into_bytes();
+                Some(bytes.into())
+            }
+        };
+        bot.wasm_bytes = wasm_bytes;
+    }
+
     return Ok(bots);
 }
 
@@ -487,8 +616,8 @@ async fn run_match(match_id: &String, bot1: &BotDetails, bot2: &BotDetails) -> R
     return join.await?;
 }
 
-pub async fn create_tournament(db_pool: &ConnectionPool) -> Result<Tournament> {
-    let mut bots = get_bots(db_pool).await?;
+pub async fn create_tournament(db_pool: &ConnectionPool, bucket_name: &String) -> Result<Tournament> {
+    let mut bots = get_bots(db_pool, bucket_name).await?;
     bots.shuffle(&mut rand::thread_rng());
 
     let num_bots = bots.len() as u32;
@@ -555,3 +684,33 @@ pub async fn create_tournament(db_pool: &ConnectionPool) -> Result<Tournament> {
     all_matches.append(&mut last_round_matches);
     return Ok(Tournament { starting_matches: all_matches, match_updates: vec![] });
 }
+
+async fn save_bot_code(bucket_name: &String, bytes: Vec<u8>) -> Result<String> {
+    let shared_config = aws_config::load_defaults(BehaviorVersion::v2023_11_09()).await;
+    let client = S3Client::new(&shared_config);
+  
+    let objects = client.list_objects_v2().bucket(bucket_name).send().await?;
+    println!("Objects in bucket:");
+    for obj in objects.contents() {
+        println!("{:?}", obj.key().unwrap());
+    }
+
+    let hash = sha256::digest(&bytes);
+    let key = format!("{}.wasm", hash);
+    let body = ByteStream::from(bytes);
+
+    println!("{}", &key);
+    client
+        .put_object()
+        .bucket(bucket_name)
+        .key(&key)
+        .body(body)
+        .send()
+        .await
+        .map_err(|err| {
+            println!("Error uploading bot to S3: {}", &err);
+            err
+        })?;
+
+    Ok(key.clone())
+  }

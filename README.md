@@ -37,7 +37,7 @@ The client devserver is configured to proxy to `localhost:3001` for server reque
 Create a fresh postgres DB called `snippy`
 
 ```
-createdb
+createdb snippy
 ```
 
 Then there's a script to create the necessary tables and populate it with some sample bots.
@@ -46,14 +46,16 @@ Then there's a script to create the necessary tables and populate it with some s
 This is for local development only.
 
 ```sh
-psql snippy < wasi-runner/setup.sql
+psql snippy < ./wasi-runner/local_setup.sql
 ```
 
 In the `wasi-runner` folder, create a file called `.env` with the following contents.
 
 ```
-DATABASE_URL="postgres://snippyuser:snippy123@localhost:5432/snippy"
+DB_PASSWORD="snippy123"
 ```
+
+Note: You can also set `DB_HOST`, `DB_PORT` and `DB_USER` but they default to `localhost:5432` and `snippyuser` if not specified.
 
 ### Build and run the server
 

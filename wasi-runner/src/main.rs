@@ -2,10 +2,11 @@ use axum::{
     extract::{
         ws::{Message, WebSocket, WebSocketUpgrade},
         State,
+        Multipart,
     },
     response::{IntoResponse, Response},
     routing::{get, post},
-    Router, http::StatusCode, Json,
+    Router, http::StatusCode, Json, body::Bytes,
 };
 use std::{net::SocketAddr, path::PathBuf, fs, time::Duration};
 use tower_http::{
@@ -26,7 +27,7 @@ use axum::extract::connect_info::ConnectInfo;
 //allows to split the websocket stream into separate TX and RX branches
 use futures::{sink::SinkExt, stream::StreamExt};
 
-use tournament::{BotDetails, BotRunType, Tournament};
+use tournament::{BotDetails, BotRunType, Tournament, SPROption};
 
 use tokio_postgres::NoTls;
 use native_tls::{TlsConnector, Certificate};
@@ -44,6 +45,7 @@ struct SharedState {
     tournament: RwLock<Tournament>,
     broadcast_channel: broadcast::Sender<String>,
     db_pool: ConnectionPool,
+    bucket_name: String,
 }
 
 const TOURNAMENT_INTERVAL: u64 = 30;
@@ -60,6 +62,7 @@ async fn main() {
     let db_name = env::var("DB_NAME").unwrap_or("snippy".to_string());
     let db_user = env::var("DB_USER").unwrap_or("snippyuser".to_string());
     let db_password = env::var("DB_PASSWORD").unwrap_or("".to_string());
+    let bucket_name = env::var("S3_BUCKET_NAME").expect("S3_BUCKET_NAME is required.");
 
     let mut config = Config::new();
     config.host = Some(db_host);
@@ -92,7 +95,8 @@ async fn main() {
     let shared_state: Arc<SharedState> = Arc::new(SharedState {
         tournament: RwLock::new(Tournament::new()),
         broadcast_channel: tx,
-        db_pool
+        db_pool,
+        bucket_name,
     });
 
     // build our application with a route
@@ -104,6 +108,7 @@ async fn main() {
         .route("/health", get(health))
         .route("/api/test", post(test_bot))
         .route("/api/bot", post(post_bot))
+        .route("/api/upload_wasm", post(upload_wasm))
         // .route("/api/tournament", post(create_tournament))
         .with_state(shared_state.clone())
         .layer(
@@ -143,7 +148,7 @@ async fn start_background_tournaments(shared_state: Arc<SharedState>) -> Result<
 
     while let Some(_ts) = stream.next().await {
         println!("Starting new tournament.");
-        let result = tournament::create_tournament(&shared_state.db_pool).await;
+        let result = tournament::create_tournament(&shared_state.db_pool, &shared_state.bucket_name).await;
         match result {
             Ok(payload) => {
                 let mut tournament = shared_state.tournament.write().await;
@@ -196,12 +201,13 @@ async fn post_bot(State(shared_state): State<Arc<SharedState>>, Json(payload): J
     let botname = payload.name;
     let botcode = payload.botcode;
 
-    let bot: BotDetails = BotDetails {
+    let mut bot: BotDetails = BotDetails {
         id: None,
         run_type: payload.run_type,
         name: botname.clone(),
         code: botcode.clone(),
         wasm_path: "".to_string(),
+        wasm_bytes: None,
     };
 
     if botname.len() > 30 {
@@ -211,7 +217,7 @@ async fn post_bot(State(shared_state): State<Arc<SharedState>>, Json(payload): J
         return (StatusCode::BAD_REQUEST, Json("Bot name cannot be empty.")).into_response();
     }
 
-    let result = tournament::add_bot(&shared_state.db_pool, &bot).await;
+    let result = tournament::add_bot(&shared_state.db_pool, &shared_state.bucket_name, &mut bot, true).await;
     return match result {
         Ok(1) => (StatusCode::OK, Json("success!")).into_response(),
         Ok(_) => (StatusCode::BAD_REQUEST, Json("Bot name is already in use.")).into_response(),
@@ -231,6 +237,7 @@ async fn test_bot(Json(payload): Json<TestBotRequest>) -> Response {
         name: "test".to_string(),
         code: botcode.clone(),
         wasm_path: "".to_string(),
+        wasm_bytes: None,
     };
 
     let result = tournament::test_bot(&bot).await;
@@ -311,4 +318,71 @@ async fn handle_socket(socket: WebSocket, who: SocketAddr, state: Arc<SharedStat
         _ = (&mut recv_task) => send_task.abort(),
     };
     println!("Websocket context {} destroyed", who);
+}
+
+
+async fn upload_wasm (
+    State(shared_state): State<Arc<SharedState>>,
+    mut form_data: Multipart,
+) -> Response {
+    let mut botname = "".to_string();
+    let mut data: Bytes = Bytes::from("".to_string());
+    while let Some(field) = form_data.next_field().await.unwrap() {
+        let field_name = field.name().unwrap_or_default().to_string();
+        if field_name == "botname".to_string() {
+            botname = field.text().await.unwrap();
+        } else if field_name == "wasm_file".to_string() {
+            data = field.bytes().await.unwrap_or_default();
+        }
+    }
+
+    if data.len() == 0 {
+        return (StatusCode::BAD_REQUEST, Json("No file uploaded.")).into_response();
+    }
+    if botname.is_empty() {
+        return (StatusCode::BAD_REQUEST, Json("No bot name provided.")).into_response();
+    }
+    
+    let data_vec: Vec<u8> = data.to_vec();
+
+    println!("File upload size: {}", data.len());
+
+    let mut bot: BotDetails = BotDetails {
+        id: None,
+        run_type: BotRunType::Wasi,
+        name: botname.clone(),
+        code: "".to_string(),
+        wasm_path: "".to_string(),
+        wasm_bytes: Some(data_vec),
+    };
+
+    let result = tournament::test_bot(&bot).await;
+    let bot_run_result = match result {
+        Ok(payload) => payload,
+        Err(e) => {
+            println!("Error: {}", e);
+            return (StatusCode::INTERNAL_SERVER_ERROR, Json("Unexpected error occurred".to_string())).into_response();
+        }
+    };
+
+    match bot_run_result.result {
+        SPROption::Invalid => {
+            let reason = bot_run_result.invalid_reason.unwrap_or("Unknown reason".to_string());
+            return (StatusCode::BAD_REQUEST, Json(format!("Bot did not pass a test run. {}", reason))).into_response();
+        },
+        _ => ()
+    }
+
+    match tournament::add_bot(&shared_state.db_pool, &shared_state.bucket_name, &mut bot, false).await {
+        Ok(1) => {
+            return (StatusCode::OK, Json("success!")).into_response();
+        }
+        Ok(_) => {
+            return (StatusCode::BAD_REQUEST, Json("Bot name is already in use.")).into_response();
+        },
+        Err(e) => {
+            println!("Error: {}", e);
+            return (StatusCode::INTERNAL_SERVER_ERROR, Json("Unexpected error occurred".to_string())).into_response();
+        }
+    }
 }
