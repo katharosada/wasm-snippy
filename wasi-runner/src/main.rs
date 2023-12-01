@@ -157,7 +157,7 @@ async fn start_background_tournaments(shared_state: Arc<SharedState>) -> Result<
                 *tournament = payload;
 
                 let sender = shared_state.broadcast_channel.clone();
-                let result2 = (*tournament).run(sender).await;
+                let result2 = (*tournament).run(sender, &shared_state.db_pool).await;
                 match result2 {
                     Ok(_) => {},
                     Err(e) => {

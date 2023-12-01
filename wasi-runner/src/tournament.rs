@@ -388,7 +388,7 @@ fn run_python_bot(bot_details: &BotDetails, input: String) -> Result<BotRunResul
 
 async fn get_bots(db_pool: &ConnectionPool, bucket_name: &String) -> Result<Vec<BotDetails>> {
     let conn = db_pool.get().await?;
-    let stmt = conn.prepare("SELECT id, name, script_contents, run_type, wasm_path FROM bots").await?;
+    let stmt = conn.prepare("SELECT id, name, script_contents, run_type, wasm_path FROM bots WHERE is_disabled = false").await?;
 
     let shared_config = aws_config::load_defaults(BehaviorVersion::v2023_11_09()).await;
     let client = S3Client::new(&shared_config);
@@ -491,7 +491,7 @@ impl Tournament {
         }
     }
 
-    pub async fn run(&mut self, sender: Sender<String>) -> Result<()> {
+    pub async fn run(&mut self, sender: Sender<String>, db_pool: &ConnectionPool) -> Result<()> {
         let mut match_participants: HashMap<String, Vec<BotDetails>> = self.starting_matches
             .iter().map(|m| (m.id.clone(), m.participants.clone())).collect();
 
@@ -523,7 +523,7 @@ impl Tournament {
             } else {
                 let participants = match_participants.get(&this_match.id).unwrap();
                 let match_outcome = run_match(
-                    &this_match.id, &participants[0], &participants[1]).await?;
+                    &this_match.id, &participants[0], &participants[1], db_pool).await?;
                 winner_bot = participants[match_outcome.winner as usize].clone();
                 sender.send(serde_json::to_string(&match_outcome).unwrap()).unwrap();
                 self.match_updates.push(match_outcome.clone());
@@ -543,77 +543,86 @@ impl Tournament {
     }
 }
 
-async fn run_match(match_id: &String, bot1: &BotDetails, bot2: &BotDetails) -> Result<MatchOutcome> {
+async fn run_match(match_id: &String, bot1: &BotDetails, bot2: &BotDetails, db_pool: &ConnectionPool) -> Result<MatchOutcome> {
     let match_id = match_id.clone();
     let bot1 = bot1.clone();
     let bot2 = bot2.clone();
 
-    let join: tokio::task::JoinHandle<std::prelude::v1::Result<MatchOutcome, Error>> = tokio::task::spawn_blocking(move || {
 
-        let mut bot1_moves: Vec<SPROption> = vec![];
-        let mut bot2_moves: Vec<SPROption> = vec![];
 
-        let mut winner_bot: Option<usize> = None;
-        for _i in 0..5 {
-            // TODO: Generate stdin input and stop using the test function.
-            let bot1_result = run_bot(&bot1, &bot2.name,&bot1_moves)?;
-            let bot2_result = run_bot(&bot2, &bot1.name, &bot1_moves)?;
-            let bot1_play = bot1_result.result;
-            let bot2_play = bot2_result.result;
-            bot1_moves.push(bot1_play.clone());
-            bot2_moves.push(bot2_play.clone());
-            if bot1_play == bot2_play {
-                // Both invalid, no one wins.
-                if bot1_play == SPROption::Invalid {
-                    break;
-                }
-                continue;
-            } else if bot1_play == SPROption::Invalid {
-                winner_bot = Some(1);
-                break
-            } else if bot1_play.beats(&bot2_play) {
-                winner_bot = Some(0);
-                break
-            } else {
-                winner_bot = Some(1);
-                break
+    let mut bot1_moves: Vec<SPROption> = vec![];
+    let mut bot2_moves: Vec<SPROption> = vec![];
+
+    let mut winner_bot: Option<usize> = None;
+    for _i in 0..5 {
+        // TODO: Generate stdin input and stop using the test function.
+        let bot1_result = run_bot(&bot1, &bot2.name,&bot1_moves)?;
+        let bot2_result = run_bot(&bot2, &bot1.name, &bot1_moves)?;
+        let bot1_play = bot1_result.result;
+        let bot2_play = bot2_result.result;
+        bot1_moves.push(bot1_play.clone());
+        bot2_moves.push(bot2_play.clone());
+        if bot1_play == bot2_play {
+            // Both invalid, no one wins.
+            if bot1_play == SPROption::Invalid {
+                break;
             }
+            continue;
+        } else if bot1_play == SPROption::Invalid {
+            winner_bot = Some(1);
+            break
+        } else if bot1_play.beats(&bot2_play) {
+            winner_bot = Some(0);
+            break
+        } else {
+            winner_bot = Some(1);
+            break
         }
+    }
 
-        let mut note: Option<String> = None;
-        let winner_bot = match winner_bot {
-            Some(winner_bot) => winner_bot,
-            None => {
-                note = Some("5x Draw. Winner chosen by coin toss.".to_string());
-                // 5 rounds resulted in a draw
-                // Choose random winner - number 0 or 1
-                let mut rng = rand::thread_rng();
-                rng.gen_range(0..2)
-            }
-        };
+    let mut note: Option<String> = None;
+    let winner_bot = match winner_bot {
+        Some(winner_bot) => winner_bot,
+        None => {
+            note = Some("5x Draw. Winner chosen by coin toss.".to_string());
+            // 5 rounds resulted in a draw
+            // Choose random winner - number 0 or 1
+            let mut rng = rand::thread_rng();
+            rng.gen_range(0..2)
+        }
+    };
 
-        let participant_outcomes = vec![
-            ParticipantOutcome {
-                name: bot1.name.clone(),
-                moves: bot1_moves.clone(),
-                winner: winner_bot == 0
-            },
-            ParticipantOutcome {
-                name: bot2.name.clone(),
-                moves: bot2_moves.clone(),
-                winner: winner_bot == 1
-            }
-        ];
+    // Check for invalid moves
+    let is_bot1_invalid = bot1_moves.iter().any(|m| *m == SPROption::Invalid);
+    
+    if is_bot1_invalid {
+        disable_bot(bot1.id, db_pool).await?;
+    }
+    let is_bot2_invalid = bot2_moves.iter().any(|m| *m == SPROption::Invalid);
+    if is_bot2_invalid {
+        disable_bot(bot2.id, db_pool).await?;
+    }
 
-        return Ok(MatchOutcome {
-            match_id: match_id.clone(),
-            state: MatchState::Finished,
-            winner: winner_bot,
-            note,
-            participants: participant_outcomes
-        })
-    });
-    return join.await?;
+    let participant_outcomes = vec![
+        ParticipantOutcome {
+            name: bot1.name.clone(),
+            moves: bot1_moves.clone(),
+            winner: winner_bot == 0
+        },
+        ParticipantOutcome {
+            name: bot2.name.clone(),
+            moves: bot2_moves.clone(),
+            winner: winner_bot == 1
+        }
+    ];
+
+    return Ok(MatchOutcome {
+        match_id: match_id.clone(),
+        state: MatchState::Finished,
+        winner: winner_bot,
+        note,
+        participants: participant_outcomes
+    })
 }
 
 pub async fn create_tournament(db_pool: &ConnectionPool, bucket_name: &String) -> Result<Tournament> {
@@ -683,6 +692,18 @@ pub async fn create_tournament(db_pool: &ConnectionPool, bucket_name: &String) -
     }
     all_matches.append(&mut last_round_matches);
     return Ok(Tournament { starting_matches: all_matches, match_updates: vec![] });
+}
+
+async fn disable_bot(bot_id: Option<i32>, db_pool: &ConnectionPool) -> Result<u64> {
+    let bot_id = match bot_id {
+        Some(bot_id) => bot_id,
+        None => return Ok(0),
+    };
+    println!("Disabling bot {}", bot_id);
+    let conn = db_pool.get().await?;
+    let stmt = conn.prepare("UPDATE bots SET is_disabled = true WHERE id = $1").await?;
+    let count = conn.execute(&stmt, &[&bot_id]).await?;
+    return Ok(count);
 }
 
 async fn save_bot_code(bucket_name: &String, bytes: Vec<u8>) -> Result<String> {

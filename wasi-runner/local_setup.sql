@@ -20,3 +20,6 @@ INSERT INTO bots (name, run_type, script_contents, wasm_path, is_builtin) VALUES
 INSERT INTO bots (name, run_type, script_contents, wasm_path, is_builtin) VALUES ('Rocky', 2, 'print(''rock'')', '', true);
 INSERT INTO bots (name, run_type, script_contents, wasm_path, is_builtin) VALUES ('Bookworm', 2, 'print(''paper'')', '', true);
 INSERT INTO bots (name, run_type, script_contents, wasm_path, is_builtin) VALUES ('Snippy snap', 2, 'print(''scissors'')', '', true);
+
+-- Add colum to bots table for disabling bots
+ALTER TABLE bots ADD is_disabled BOOLEAN NOT NULL DEFAULT FALSE;
