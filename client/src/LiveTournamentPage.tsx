@@ -159,7 +159,12 @@ function LiveTournamentPage() {
         <Typography variant="h3" component={'h2'} sx={{ py: 1, fontSize: '18pt' }}>
           Tournament
         </Typography>
-        <Typography sx={{ py: 1, fontSize: '12pt' }}>A new tournament starts automatically every minute.</Typography>
+        <Typography sx={{ py: 1, fontSize: '12pt' }}>
+          A new tournament starts automatically every minute.
+          <br />
+          Bots that return an invalid play will be removed from future tournaments.
+        </Typography>
+        <Typography sx={{ py: 1, fontSize: '12pt' }}></Typography>
       </Box>
       <Tournament matches={matches} />
     </Box>
