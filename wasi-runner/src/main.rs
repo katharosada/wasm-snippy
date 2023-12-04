@@ -1,3 +1,6 @@
+use std::env;
+use std::sync::Arc;
+
 use axum::{
     extract::{
         ws::{Message, WebSocket, WebSocketUpgrade},
@@ -13,29 +16,24 @@ use tower_http::{
     services::ServeDir,
     trace::{DefaultMakeSpan, TraceLayer},
 };
-
 use serde::Deserialize;
-use std::sync::Arc;
+
 use tokio::sync::RwLock;
 use tokio::sync::broadcast;
 use tokio::time;
 use tokio_stream::wrappers::IntervalStream;
+use tokio_postgres::NoTls;
 
-//allows to extract the IP of connecting user
-use axum::extract::connect_info::ConnectInfo;
+use anyhow::Result;
 
 //allows to split the websocket stream into separate TX and RX branches
 use futures::{sink::SinkExt, stream::StreamExt};
-
-use tournament::{BotDetails, BotRunType, Tournament, SPROption};
-
-use tokio_postgres::NoTls;
 use native_tls::{TlsConnector, Certificate};
 use postgres_native_tls::MakeTlsConnector;
 use deadpool_postgres::{Config, ManagerConfig, Pool, RecyclingMethod, Runtime};
-
-use std::env;
 use dotenvy::dotenv;
+
+use tournament::{BotDetails, BotRunType, Tournament, SPROption};
 
 mod tournament;
 
@@ -109,7 +107,6 @@ async fn main() {
         .route("/api/test", post(test_bot))
         .route("/api/bot", post(post_bot))
         .route("/api/upload_wasm", post(upload_wasm))
-        // .route("/api/tournament", post(create_tournament))
         .with_state(shared_state.clone())
         .layer(
             TraceLayer::new_for_http()
@@ -143,7 +140,7 @@ async fn main() {
 }
 
 
-async fn start_background_tournaments(shared_state: Arc<SharedState>) -> Result<(), Box<dyn std::error::Error>> {
+async fn start_background_tournaments(shared_state: Arc<SharedState>) -> Result<()> {
     let mut stream = IntervalStream::new(time::interval(Duration::from_secs(TOURNAMENT_INTERVAL)));
 
     while let Some(_ts) = stream.next().await {
@@ -252,18 +249,15 @@ async fn test_bot(Json(payload): Json<TestBotRequest>) -> Response {
 
 async fn ws_handler(
     ws: WebSocketUpgrade,
-    ConnectInfo(addr): ConnectInfo<SocketAddr>,
     State(shared_state): State<Arc<SharedState>>,
 ) -> impl IntoResponse {
-    let user_agent = String::from("Unknown browser");
-    println!("`{user_agent}` at {addr} connected.");
     // finalize the upgrade process by returning upgrade callback.
     // we can customize the callback by sending additional info such as address.
-    ws.on_upgrade(move |socket| handle_socket(socket, addr, shared_state))
+    ws.on_upgrade(move |socket| handle_socket(socket, shared_state))
 }
 
 /// Actual websocket statemachine (one will be spawned per connection)
-async fn handle_socket(socket: WebSocket, who: SocketAddr, state: Arc<SharedState>) {
+async fn handle_socket(socket: WebSocket, state: Arc<SharedState>) {
     // By splitting socket we can send and receive at the same time. In this example we will send
     // unsolicited messages to client based on some sort of server's internal event (i.e .timer).
     let (mut sender, mut receiver) = socket.split();
@@ -287,10 +281,9 @@ async fn handle_socket(socket: WebSocket, who: SocketAddr, state: Arc<SharedStat
     let mut send_task = tokio::spawn(async move {
         // Send updates to the client too.
         while let Ok(msg) = update_reciever.recv().await {
-            println!("Sending update to client {}", who);
             // In any websocket error, break loop.
             if sender.send(Message::Text(msg)).await.is_err() {
-                println!("Error for client {}, breaking.", who);
+                println!("Error for websocket client, breaking.");
                 break;
             }
         }
@@ -301,7 +294,7 @@ async fn handle_socket(socket: WebSocket, who: SocketAddr, state: Arc<SharedStat
             match message {
                 Ok(Message::Text(text)) => text,
                 Ok(Message::Close(_)) => {
-                    println!("Received close message from {}", who);
+                    println!("Received close message from websocket client.");
                     break;
                 }
                 Err(e) => {
@@ -317,7 +310,6 @@ async fn handle_socket(socket: WebSocket, who: SocketAddr, state: Arc<SharedStat
         _ = (&mut send_task) => recv_task.abort(),
         _ = (&mut recv_task) => send_task.abort(),
     };
-    println!("Websocket context {} destroyed", who);
 }
 
 

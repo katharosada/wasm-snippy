@@ -1,24 +1,73 @@
 use std::env;
 use std::fs;
 use std::str;
-use std::path::Path;
 use std::collections::HashMap;
+use std::sync::Arc;
+use std::time::Duration;
 use rand::Rng;
 use rand::seq::SliceRandom;
 use tokio::sync::broadcast::Sender;
-use wasmtime::*;
-use wasmtime_wasi::sync::WasiCtxBuilder;
-use wasi_common::pipe::ReadPipe;
-use wasi_common::pipe::WritePipe;
+use tokio::time::timeout;
+use wasmtime::{Store, Config, Engine, Module, Linker};
+use wasmtime_wasi::preview2::pipe::MemoryInputPipe;
+use wasmtime_wasi::preview2::pipe::MemoryOutputPipe;
+use wasmtime_wasi::preview2::{
+    DirPerms,
+    FilePerms,
+    WasiCtxBuilder,
+    WasiView,
+    WasiCtx
+};
+use wasmtime_wasi::preview2;
 use std::time::Instant;
 use lazy_static::lazy_static;
 use serde::{Deserialize, Serialize};
 use aws_config::BehaviorVersion;
 use aws_sdk_s3::primitives::ByteStream;
 use aws_sdk_s3::Client as S3Client;
-
+use anyhow::Result;
 
 use crate::ConnectionPool;
+
+const STDOUT_STDERR_LIMIT: usize = 100 * 1024; // 100KiB
+const WASM_TIMEOUT_LIMIT: Duration = Duration::from_millis(200);
+
+struct WasiHostCtx {
+    pub wasi_preview2_ctx: Option<Arc<WasiCtx>>,
+    pub wasi_preview2_table: Arc<preview2::Table>,
+    pub wasi_preview2_adapter: Arc<preview2::preview1::WasiPreview1Adapter>,
+}
+
+impl WasiView for WasiHostCtx {
+    fn table(&self) -> &preview2::Table {
+        &self.wasi_preview2_table
+    }
+
+    fn table_mut(&mut self) -> &mut preview2::Table {
+        Arc::get_mut(&mut self.wasi_preview2_table)
+            .expect("preview2 is not compatible with threads")
+    }
+
+    fn ctx(&self) -> &preview2::WasiCtx {
+        self.wasi_preview2_ctx.as_ref().unwrap()
+    }
+
+    fn ctx_mut(&mut self) -> &mut preview2::WasiCtx {
+        let ctx = self.wasi_preview2_ctx.as_mut().unwrap();
+        Arc::get_mut(ctx).expect("preview2 is not compatible with threads")
+    }
+}
+
+impl preview2::preview1::WasiPreview1View for WasiHostCtx {
+    fn adapter(&self) -> &preview2::preview1::WasiPreview1Adapter {
+        &self.wasi_preview2_adapter
+    }
+
+    fn adapter_mut(&mut self) -> &mut preview2::preview1::WasiPreview1Adapter {
+        Arc::get_mut(&mut self.wasi_preview2_adapter)
+            .expect("preview2 is not compatible with threads")
+    }
+}
 
 
 #[derive(Serialize, Clone, PartialEq, Eq)]
@@ -87,6 +136,8 @@ impl WasmRuntime {
         let mut config = Config::new();
         config.wasm_component_model(true);
         config.consume_fuel(true);
+        config.async_support(true);
+        config.wasm_threads(false);
         let engine = Engine::new(&config)?;
         // Instantiate our module with the imports we've created, and run it.
         let module = Module::from_file(&engine, "./python-3.11.4.wasm")?;
@@ -139,34 +190,32 @@ fn generate_test_input(bot_name: &String, opponent_name: &String, history: &Vec<
 }
 
 // This one is syncrhonous because it's intended to be run in a blocking thread.
-pub fn run_bot(bot_details: &BotDetails, opponent_name: &String, history: &Vec<SPROption>) -> Result<BotRunResult> {
+pub async fn run_bot(bot_details: &BotDetails, opponent_name: &String, history: &Vec<SPROption>) -> Result<BotRunResult> {
     let input = generate_test_input(&bot_details.name, opponent_name, &history);
+
     match bot_details.run_type {
         BotRunType::Wasi => {
-            return run_wasi_bot(&bot_details, input);
+            return run_wasi_bot(&bot_details, input).await;
         },
         BotRunType::Python => {
-            return run_python_bot(&bot_details, input);
+            return run_python_bot(&bot_details, &input).await;
         }
     }
 }
 
 pub async fn test_bot(bot_details: &BotDetails) -> Result<BotRunResult> {
     let bot_details = bot_details.clone();
-    let join = tokio::task::spawn_blocking(move || {
-        let test_history = vec![SPROption::Rock, SPROption::Scissors];
-        let test_opponent = "testbot".to_string();
-        let input = generate_test_input(&bot_details.name, &test_opponent, &test_history);
-        match bot_details.run_type {
-            BotRunType::Wasi => {
-                return run_wasi_bot(&bot_details, input);
-            },
-            BotRunType::Python => {
-                return run_python_bot(&bot_details, input);
-            }
+    let test_history = vec![SPROption::Rock, SPROption::Scissors];
+    let test_opponent = "testbot".to_string();
+    let input = generate_test_input(&bot_details.name, &test_opponent, &test_history);
+    match bot_details.run_type {
+        BotRunType::Wasi => {
+            return run_wasi_bot(&bot_details, input).await;
+        },
+        BotRunType::Python => {
+            return run_python_bot(&bot_details, &input).await;
         }
-    });
-    return join.await?;
+    }
 }
 
 pub async fn add_bot(db_pool: &ConnectionPool, bucket_name: &String, bot_details: &mut BotDetails, test: bool) -> Result<u64> {
@@ -194,25 +243,31 @@ pub async fn add_bot(db_pool: &ConnectionPool, bucket_name: &String, bot_details
     return Ok(count);
 }
 
-fn run_wasi_bot(bot_details: &BotDetails, input: String) -> Result<BotRunResult> {
+async fn run_wasi_bot(bot_details: &BotDetails, input: String) -> Result<BotRunResult> {
     println!("Running WASI bot, path: {}", bot_details.wasm_path);
-    let mut linker = Linker::new(&WASM_RUNTIME.engine);
-    wasmtime_wasi::add_to_linker(&mut linker, |s| s)?;
+    let mut linker: Linker<WasiHostCtx> = Linker::new(&WASM_RUNTIME.engine);
+    preview2::preview1::add_to_linker_async(&mut linker)?;
 
     let args: &[String] = &["wasmbot".to_string()];
 
-    let stdin = ReadPipe::from(input.clone());
-    let stdout = WritePipe::new_in_memory();
-    let stderr = WritePipe::new_in_memory();
+    let stdin: MemoryInputPipe = MemoryInputPipe::new(input.clone().into());
+    let stdout = MemoryOutputPipe::new(STDOUT_STDERR_LIMIT);
+    let stderr = MemoryOutputPipe::new(STDOUT_STDERR_LIMIT);
 
     let wasi = WasiCtxBuilder::new()
-        .args(&args)?
-        .stdin(Box::new(stdin))
-        .stdout(Box::new(stdout.clone()))
-        .stderr(Box::new(stderr.clone()))
+        .args(&args)
+        .stdin(stdin)
+        .stdout(stdout.clone())
+        .stderr(stderr.clone())
         .build();
 
-    let mut store = Store::new(&WASM_RUNTIME.engine, wasi);
+    let host = WasiHostCtx {
+        wasi_preview2_ctx: Some(Arc::new(wasi)),
+        wasi_preview2_table: Arc::new(preview2::Table::new()),
+        wasi_preview2_adapter: Arc::new(preview2::preview1::WasiPreview1Adapter::new()),
+    };
+
+    let mut store = Store::new(&WASM_RUNTIME.engine, host);
     store.add_fuel(1_000_000_000)?;
 
     match bot_details.wasm_bytes.clone() {
@@ -234,37 +289,52 @@ fn run_wasi_bot(bot_details: &BotDetails, input: String) -> Result<BotRunResult>
                     });
                 }
             };
-            
-            linker.module(&mut store, "", &module)?;
-            let start = Instant::now();
-            let result = linker
+
+            let linker = linker
+                .module_async(&mut store, "", &module)
+                .await?;
+
+            let func = linker
                 .get_default(&mut store, "")?
-                .typed::<(), ()>(&store)?
-                .call(&mut store, ());
+                .typed::<(), ()>(&store)?;
         
+            let start = Instant::now();
+            let my_duration = tokio::time::Duration::from_millis(500);
+            let result = timeout(
+                my_duration,
+                func.call_async(&mut store, ()))
+                .await;
             let duration = start.elapsed();
-            println!("Wasm stopped after {}s", duration.as_secs_f32());
             drop(store);
-        
-            let stdout_buf: Vec<u8> = stdout.try_into_inner().expect("sole remaining reference to WritePipe").into_inner();
-            let stdout_str = String::from_utf8_lossy(&stdout_buf).to_string();
-        
-            let stderr_buf: Vec<u8> = stderr.try_into_inner().expect("sole remaining reference to WritePipe").into_inner();
-            
-            let stderr_str = String::from_utf8_lossy(&stderr_buf).to_string();
-        
-        
-            if result.is_err() {
-                println!("Error running wasm bot.");
-                return Ok(BotRunResult{
-                    stdin: input,
-                    stdout: stdout_str,
-                    stderr: stderr_str,
-                    duration: duration.as_secs_f32(),
-                    result: SPROption::Invalid,
-                    invalid_reason: Some("Program did not exit successfully.".to_string())
-                })
-            }
+            let stdout_str = String::from_utf8_lossy(&stdout.contents()).to_string();
+            let stderr_str = String::from_utf8_lossy(&stderr.contents()).to_string();
+
+            match result {
+                Ok(Ok(_)) => println!("Wasm finished ok"),
+                Ok(Err(e)) => {
+                    println!("Wasm error: {}", e);
+                    return Ok(BotRunResult{
+                        stdin: input,
+                        stdout: stdout_str,
+                        stderr: stderr_str,
+                        duration: duration.as_secs_f32(),
+                        result: SPROption::Invalid,
+                        invalid_reason: Some("Program did not exit successfully.".to_string())
+                    })
+                },
+                Err(_) => {
+                    let nice_message = format!("Timeout! Bots are limited to {}ms", WASM_TIMEOUT_LIMIT.as_millis());
+                    return Ok(BotRunResult{
+                        stdin: input.clone(),
+                        stdout: stdout_str,
+                        stderr: stderr_str,
+                        duration: duration.as_secs_f32(),
+                        result: SPROption::Invalid,
+                        invalid_reason: Some(nice_message)
+                    })
+                },
+            };
+
             let bot_result = extract_result_from_stdout(&stdout_str);
             let invalid_reason = match bot_result {
                 SPROption::Invalid => Some("Program did not print a valid play on the last line.".to_string()),
@@ -278,7 +348,6 @@ fn run_wasi_bot(bot_details: &BotDetails, input: String) -> Result<BotRunResult>
                 result: bot_result,
                 invalid_reason: invalid_reason
             });
-
         }
     }
 
@@ -310,16 +379,16 @@ fn extract_result_from_stdout(stdout: &String) -> SPROption {
     }
 }
 
-fn run_python_bot(bot_details: &BotDetails, input: String) -> Result<BotRunResult> {
+async fn run_python_bot(bot_details: &BotDetails, input: &String) -> Result<BotRunResult> {
     let mut linker = Linker::new(&WASM_RUNTIME.engine);
-    wasmtime_wasi::add_to_linker(&mut linker, |s| s)?;
+    preview2::preview1::add_to_linker_async(&mut linker)?;
 
     // Fake args
     let args: &[String] = &["python".to_string(), "main.py".to_string()];
-
-    let stdin = ReadPipe::from(input.clone());
-    let stdout = WritePipe::new_in_memory();
-    let stderr = WritePipe::new_in_memory();
+    let input = input.clone();
+    let stdin: MemoryInputPipe = MemoryInputPipe::new(input.clone().into());
+    let stdout = MemoryOutputPipe::new(STDOUT_STDERR_LIMIT);
+    let stderr = MemoryOutputPipe::new(STDOUT_STDERR_LIMIT);
 
     let temp_dir_path = env::temp_dir();
     let temp_dir = fs::File::open(temp_dir_path.clone())?;
@@ -327,56 +396,75 @@ fn run_python_bot(bot_details: &BotDetails, input: String) -> Result<BotRunResul
     fs::write(main_py_path, bot_details.code.as_bytes())?;
 
     let root_dir = wasmtime_wasi::sync::Dir::from_std_file(temp_dir);
-    let root_dir_internal_path = Path::new("/");
 
     let wasi = WasiCtxBuilder::new()
-        .args(&args)?
-        .stdin(Box::new(stdin))
-        .stdout(Box::new(stdout.clone()))
-        .stderr(Box::new(stderr.clone()))
-        .preopened_dir(root_dir, root_dir_internal_path)?
+        .args(&args)
+        .stdin(stdin)
+        .stdout(stdout.clone())
+        .stderr(stderr.clone())
+        .preopened_dir(root_dir, DirPerms::READ, FilePerms::READ, "/")
         .build();
 
-    let mut store = Store::new(&WASM_RUNTIME.engine, wasi);
+    let host = WasiHostCtx {
+        wasi_preview2_ctx: Some(Arc::new(wasi)),
+        wasi_preview2_table: Arc::new(preview2::Table::new()),
+        wasi_preview2_adapter: Arc::new(preview2::preview1::WasiPreview1Adapter::new()),
+    };
+
+    let mut store: Store<WasiHostCtx> = Store::new(&WASM_RUNTIME.engine, host);
     store.add_fuel(1_000_000_000)?;
 
-    linker.module(&mut store, "", &WASM_RUNTIME.python_module)?;
-    let start = Instant::now();
-    let result = linker
+    let linker: &mut Linker<WasiHostCtx> = linker.module_async(
+        &mut store, "",
+        &WASM_RUNTIME.python_module).await?;
+
+    let func = linker
         .get_default(&mut store, "")?
-        .typed::<(), ()>(&store)?
-        .call(&mut store, ());
+        .typed::<(), ()>(&store)?;
+
+    let start = Instant::now();
+    let result = timeout(WASM_TIMEOUT_LIMIT, func.call_async(&mut store, ())).await;
 
     let duration = start.elapsed();
     println!("Wasm stopped after {}s", duration.as_secs_f32());
     drop(store);
 
-    let stdout_buf: Vec<u8> = stdout.try_into_inner().expect("sole remaining reference to WritePipe").into_inner();
-    let stdout_str = String::from_utf8_lossy(&stdout_buf).to_string();
+    let stdout_str = String::from_utf8_lossy(&stdout.contents()).to_string();
+    let stderr_str = String::from_utf8_lossy(&stderr.contents()).to_string();
 
-    let stderr_buf: Vec<u8> = stderr.try_into_inner().expect("sole remaining reference to WritePipe").into_inner();
-    
-    let stderr_str = String::from_utf8_lossy(&stderr_buf).to_string();
+    match result {
+        Ok(Ok(_)) => println!("Python finished ok"),
+        Ok(Err(e)) => {
+            println!("Python error: {}", e);
+            return Ok(BotRunResult{
+                stdin: input.clone(),
+                stdout: stdout_str,
+                stderr: stderr_str,
+                duration: duration.as_secs_f32(),
+                result: SPROption::Invalid,
+                invalid_reason: Some("Program did not exit successfully.".to_string())
+            })
+        },
+        Err(_) => {
+            let nice_message = format!("Timeout! Bots are limited to {}ms", WASM_TIMEOUT_LIMIT.as_millis());
+            return Ok(BotRunResult{
+                stdin: input.clone(),
+                stdout: stdout_str,
+                stderr: stderr_str,
+                duration: duration.as_secs_f32(),
+                result: SPROption::Invalid,
+                invalid_reason: Some(nice_message)
+            })
+        },
+    };
 
-
-    if result.is_err() {
-        println!("Error running python.");
-        return Ok(BotRunResult{
-            stdin: input,
-            stdout: stdout_str,
-            stderr: stderr_str,
-            duration: duration.as_secs_f32(),
-            result: SPROption::Invalid,
-            invalid_reason: Some("Program did not exit successfully.".to_string())
-        })
-    }
     let bot_result = extract_result_from_stdout(&stdout_str);
     let invalid_reason = match bot_result {
         SPROption::Invalid => Some("Program did not print a valid play on the last line.".to_string()),
         _ => None  
     };
     return Ok(BotRunResult{
-        stdin: input,
+        stdin: input.clone(),
         stdout: stdout_str,
         stderr: stderr_str,
         duration: duration.as_secs_f32(),
@@ -384,7 +472,6 @@ fn run_python_bot(bot_details: &BotDetails, input: String) -> Result<BotRunResul
         invalid_reason: invalid_reason
     });
 }
-
 
 async fn get_bots(db_pool: &ConnectionPool, bucket_name: &String) -> Result<Vec<BotDetails>> {
     let conn = db_pool.get().await?;
@@ -556,8 +643,8 @@ async fn run_match(match_id: &String, bot1: &BotDetails, bot2: &BotDetails, db_p
     let mut winner_bot: Option<usize> = None;
     for _i in 0..5 {
         // TODO: Generate stdin input and stop using the test function.
-        let bot1_result = run_bot(&bot1, &bot2.name,&bot1_moves)?;
-        let bot2_result = run_bot(&bot2, &bot1.name, &bot1_moves)?;
+        let bot1_result = run_bot(&bot1, &bot2.name,&bot1_moves).await?;
+        let bot2_result = run_bot(&bot2, &bot1.name, &bot1_moves).await?;
         let bot1_play = bot1_result.result;
         let bot2_play = bot2_result.result;
         bot1_moves.push(bot1_play.clone());
