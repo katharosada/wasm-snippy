@@ -4,12 +4,31 @@ import CreateBotModal from './CreateBotModal'
 import ExpandMoreIcon from '@mui/icons-material/ExpandMore'
 import React, { FormEvent, useCallback, useEffect } from 'react'
 import UploadWasmModal from './UploadWasmModal'
-import { Accordion, AccordionDetails, AccordionSummary, Link, Typography } from '@mui/material'
+import {
+  Accordion,
+  AccordionDetails,
+  AccordionSummary,
+  FormControl,
+  Link,
+  MenuItem,
+  Select,
+  Typography,
+} from '@mui/material'
 import { Editor, SupportedLanguage } from './Editor'
 
-const defaultPython =
-  `` +
-  `print('Hello, I always choose rock.')
+const defaultPython = `print('Hello, I am a bot.')
+
+# Using the input JSON
+import json
+inp = json.loads(input())
+print(inp)
+
+# Generating random numbers
+import random
+num = random.randint(0, 2)
+print('Random num: ', num)
+
+# Chosen play must be the last line of output:
 print('rock')
 `
 
@@ -74,10 +93,23 @@ function CreateBotPage() {
     const runType = 'Python'
     setTesting(true)
     setTestResults(null)
+
+    // get the round num from the form data
+    const formData = new FormData(event.currentTarget)
+    const roundNum = parseInt(formData.get('test-round') as string)
+
+    // Generate stdin json for the round
+    const stdin = JSON.stringify({
+      botname: 'My Bot',
+      round: roundNum,
+      opponent: 'Test Opponent Bot',
+      history: ['Scissors', 'Rock'].slice(0, roundNum),
+    })
+
     fetch('/api/test', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ botcode: content, run_type: runType }),
+      body: JSON.stringify({ botcode: content, run_type: runType, stdin: stdin }),
     })
       .then((response) => {
         setTesting(false)
@@ -104,17 +136,17 @@ function CreateBotPage() {
   }
 
   return (
-    <Box pb={2}>
+    <Box pb={2} maxWidth={'900px'} margin={'auto'}>
       <CreateBotModal open={open} handleClose={handleClose} content={content} />
       <UploadWasmModal open={uploadOpen} handleClose={handleUploadClose} />
       <Box py={2}>
         <Typography variant="h3" component={'h2'} sx={{ py: 1, fontSize: '18pt' }}>
-          Create a Scissors-Paper-Rock bot
+          Create a Rock-Paper-Scissors bot
         </Typography>
         <Typography py={1}>
           {`You've probably played `}
           <Link href="https://en.wikipedia.org/wiki/Rock_paper_scissors" target="_blank">
-            Scissors, Paper, Rock
+            Rock, Paper, Scissors
           </Link>{' '}
           or a similar game before. Can you write a program to play it?
         </Typography>
@@ -122,7 +154,7 @@ function CreateBotPage() {
         <Typography py={1}>
           {`The tournament works by elimination, through a series of battles between pairs of bots. For each battle, both
           bots will be executed once to return their `}
-          <strong>{`play ("scissors", "paper" or "rock")`}</strong>.
+          <strong>{`play ("rock", "paper" or "scissors")`}</strong>.
           {`A winning play (e.g. "rock" beats "scissors") will result in the winning bot advancing, and the loser being eliminated.`}
         </Typography>
         <Typography py={1}>
@@ -136,8 +168,8 @@ function CreateBotPage() {
         <Typography pt={1} pb={2}>
           {`A bot program must output a valid play as the `}
           <strong>last line of Standard Output (stdout)</strong>.
-          {`The last line must be one of "scissors", "paper" or
-          "rock" with nothing else on the same line. The program may write other information to stdout or stderr, but
+          {`The last line must be one of "rock", "paper" or
+          "scissors" with nothing else on the same line. The program may write other information to stdout or stderr, but
           everything except the last line of stdout will be ignored.`}
         </Typography>
         <Accordion>
@@ -181,15 +213,22 @@ function CreateBotPage() {
       <Editor language={SupportedLanguage.PYTHON} initialContent={startingCode} onEdit={onEdit} />
       <Box py={2}>
         <form onSubmit={onSubmit}>
-          <div>
+          <Box py={1}>
+            <FormControl size="small">
+              <Select defaultValue={0} id="test-round" name="test-round">
+                <MenuItem value="0">Round 0</MenuItem>
+                <MenuItem value="1">Round 1</MenuItem>
+                <MenuItem value="2">Round 2</MenuItem>
+              </Select>
+            </FormControl>
             <Button variant="contained" type="submit" disabled={testing}>
               &nbsp;Test&nbsp;
             </Button>
-            &nbsp;
+            &nbsp;&nbsp;
             <Button onClick={handleOpen} variant="contained" color="secondary">
               Enter the Tournament
             </Button>
-          </div>
+          </Box>
         </form>
       </Box>
       <Box>

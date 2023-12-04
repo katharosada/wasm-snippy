@@ -18,7 +18,7 @@ function App() {
   return (
     <>
       <ResponsiveAppBar pages={pages} setPage={setPage} />
-      <Box sx={{ px: 3, maxWidth: 900, margin: '0 auto' }}>
+      <Box sx={{ px: 3, margin: '0 auto' }}>
         {currentPage === 'Create' ? <CreateBotPage /> : null}
         {currentPage === 'Tournament' ? <LiveTournamentPage /> : null}
       </Box>

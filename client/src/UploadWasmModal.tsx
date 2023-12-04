@@ -6,7 +6,7 @@ const style = {
   top: '50%',
   left: '50%',
   transform: 'translate(-50%, -50%)',
-  maxWidth: 400,
+  maxWidth: 500,
   bgcolor: 'background.paper',
   boxShadow: 24,
   p: 4,
@@ -77,7 +77,7 @@ export default function UploadWasmModal(props: { open: boolean; handleClose: () 
           <p style={{ fontFamily: 'monospace', fontSize: '12pt' }}>{selectedFileName}</p>
           <label htmlFor="raised-button-file">
             <Button variant="contained" component="span">
-              {selectedFileName ? 'Change file' : 'Select file'}
+              {selectedFileName ? 'Change file' : 'Select wasm file'}
             </Button>
           </label>
           <br />

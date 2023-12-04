@@ -182,12 +182,6 @@ async fn health() -> &'static str {
 }
 
 #[derive(Deserialize)]
-struct TestBotRequest {
-    botcode: String,
-    run_type: BotRunType,
-}
-
-#[derive(Deserialize)]
 struct CreateBotRequest {
     name: String,
     botcode: String,
@@ -225,6 +219,13 @@ async fn post_bot(State(shared_state): State<Arc<SharedState>>, Json(payload): J
     }
 }
 
+#[derive(Deserialize)]
+struct TestBotRequest {
+    botcode: String,
+    stdin: Option<String>,
+    run_type: BotRunType,
+}
+
 async fn test_bot(Json(payload): Json<TestBotRequest>) -> Response {
     let botcode = payload.botcode;
 
@@ -237,7 +238,7 @@ async fn test_bot(Json(payload): Json<TestBotRequest>) -> Response {
         wasm_bytes: None,
     };
 
-    let result = tournament::test_bot(&bot).await;
+    let result = tournament::test_bot(&bot, payload.stdin).await;
     match result {
         Ok(payload) => (StatusCode::OK, Json(payload)).into_response(),
         Err(e) => {
@@ -348,7 +349,7 @@ async fn upload_wasm (
         wasm_bytes: Some(data_vec),
     };
 
-    let result = tournament::test_bot(&bot).await;
+    let result = tournament::test_bot(&bot, None).await;
     let bot_run_result = match result {
         Ok(payload) => payload,
         Err(e) => {

@@ -31,6 +31,7 @@ use crate::ConnectionPool;
 
 const STDOUT_STDERR_LIMIT: usize = 100 * 1024; // 100KiB
 const WASM_TIMEOUT_LIMIT: Duration = Duration::from_millis(200);
+const WASM_MAX_FUEL: u64 = 1_000_000_000;
 
 struct WasiHostCtx {
     pub wasi_preview2_ctx: Option<Arc<WasiCtx>>,
@@ -178,7 +179,7 @@ pub struct BotRunInput {
     history: Vec<SPROption>,
 }
 
-fn generate_test_input(bot_name: &String, opponent_name: &String, history: &Vec<SPROption>) -> String {
+fn generate_stdin_input(bot_name: &String, opponent_name: &String, history: &Vec<SPROption>) -> String {
     let input = BotRunInput {
         botname: bot_name.clone(),
         opponent: opponent_name.clone(),
@@ -189,9 +190,8 @@ fn generate_test_input(bot_name: &String, opponent_name: &String, history: &Vec<
     serde_json::to_string(&input).unwrap()
 }
 
-// This one is syncrhonous because it's intended to be run in a blocking thread.
 pub async fn run_bot(bot_details: &BotDetails, opponent_name: &String, history: &Vec<SPROption>) -> Result<BotRunResult> {
-    let input = generate_test_input(&bot_details.name, opponent_name, &history);
+    let input = generate_stdin_input(&bot_details.name, opponent_name, &history);
 
     match bot_details.run_type {
         BotRunType::Wasi => {
@@ -203,11 +203,17 @@ pub async fn run_bot(bot_details: &BotDetails, opponent_name: &String, history: 
     }
 }
 
-pub async fn test_bot(bot_details: &BotDetails) -> Result<BotRunResult> {
+pub async fn test_bot(bot_details: &BotDetails, stdin: Option<String>) -> Result<BotRunResult> {
     let bot_details = bot_details.clone();
-    let test_history = vec![SPROption::Rock, SPROption::Scissors];
-    let test_opponent = "testbot".to_string();
-    let input = generate_test_input(&bot_details.name, &test_opponent, &test_history);
+    let input = match stdin {
+        Some(stdin) => stdin,
+        None => {
+            let test_history = vec![SPROption::Rock, SPROption::Scissors];
+            let test_opponent = "testbot".to_string();
+            generate_stdin_input(&bot_details.name, &test_opponent, &test_history)
+        }
+    };
+
     match bot_details.run_type {
         BotRunType::Wasi => {
             return run_wasi_bot(&bot_details, input).await;
@@ -220,7 +226,7 @@ pub async fn test_bot(bot_details: &BotDetails) -> Result<BotRunResult> {
 
 pub async fn add_bot(db_pool: &ConnectionPool, bucket_name: &String, bot_details: &mut BotDetails, test: bool) -> Result<u64> {
     if test {
-        test_bot(&bot_details).await?;
+        test_bot(&bot_details, None).await?;
     }
 
     let wasm_path = match bot_details.wasm_bytes.clone() {
@@ -268,7 +274,7 @@ async fn run_wasi_bot(bot_details: &BotDetails, input: String) -> Result<BotRunR
     };
 
     let mut store = Store::new(&WASM_RUNTIME.engine, host);
-    store.add_fuel(1_000_000_000)?;
+    store.add_fuel(WASM_MAX_FUEL)?;
 
     match bot_details.wasm_bytes.clone() {
         None => {
@@ -310,7 +316,7 @@ async fn run_wasi_bot(bot_details: &BotDetails, input: String) -> Result<BotRunR
             let stderr_str = String::from_utf8_lossy(&stderr.contents()).to_string();
 
             match result {
-                Ok(Ok(_)) => println!("Wasm finished ok"),
+                Ok(Ok(_)) => (),
                 Ok(Err(e)) => {
                     println!("Wasm error: {}", e);
                     return Ok(BotRunResult{
@@ -380,6 +386,8 @@ fn extract_result_from_stdout(stdout: &String) -> SPROption {
 }
 
 async fn run_python_bot(bot_details: &BotDetails, input: &String) -> Result<BotRunResult> {
+    let start = Instant::now();
+
     let mut linker = Linker::new(&WASM_RUNTIME.engine);
     preview2::preview1::add_to_linker_async(&mut linker)?;
 
@@ -412,7 +420,7 @@ async fn run_python_bot(bot_details: &BotDetails, input: &String) -> Result<BotR
     };
 
     let mut store: Store<WasiHostCtx> = Store::new(&WASM_RUNTIME.engine, host);
-    store.add_fuel(1_000_000_000)?;
+    store.add_fuel(WASM_MAX_FUEL)?;
 
     let linker: &mut Linker<WasiHostCtx> = linker.module_async(
         &mut store, "",
@@ -422,19 +430,30 @@ async fn run_python_bot(bot_details: &BotDetails, input: &String) -> Result<BotR
         .get_default(&mut store, "")?
         .typed::<(), ()>(&store)?;
 
-    let start = Instant::now();
     let result = timeout(WASM_TIMEOUT_LIMIT, func.call_async(&mut store, ())).await;
 
     let duration = start.elapsed();
     println!("Wasm stopped after {}s", duration.as_secs_f32());
-    drop(store);
 
     let stdout_str = String::from_utf8_lossy(&stdout.contents()).to_string();
     let stderr_str = String::from_utf8_lossy(&stderr.contents()).to_string();
 
     match result {
-        Ok(Ok(_)) => println!("Python finished ok"),
+        Ok(Ok(_)) => (),
         Ok(Err(e)) => {
+            let consumed: u64 = store.fuel_consumed().unwrap_or(0);
+            let remaining = WASM_MAX_FUEL.checked_sub(consumed).unwrap_or(0);
+            if remaining == 0 {
+                let message = format!("Program ran out of fuel: It reached the limit of {} wasm instructions.", WASM_MAX_FUEL);
+                return Ok(BotRunResult{
+                    stdin: input.clone(),
+                    stdout: stdout_str,
+                    stderr: stderr_str,
+                    duration: duration.as_secs_f32(),
+                    result: SPROption::Invalid,
+                    invalid_reason: Some(message)
+                })
+            }
             println!("Python error: {}", e);
             return Ok(BotRunResult{
                 stdin: input.clone(),
@@ -475,7 +494,7 @@ async fn run_python_bot(bot_details: &BotDetails, input: &String) -> Result<BotR
 
 async fn get_bots(db_pool: &ConnectionPool, bucket_name: &String) -> Result<Vec<BotDetails>> {
     let conn = db_pool.get().await?;
-    let stmt = conn.prepare("SELECT id, name, script_contents, run_type, wasm_path FROM bots WHERE is_disabled = false").await?;
+    let stmt = conn.prepare("SELECT id, name, script_contents, run_type, wasm_path FROM bots WHERE is_disabled = false OR is_builtin = true").await?;
 
     let shared_config = aws_config::load_defaults(BehaviorVersion::v2023_11_09()).await;
     let client = S3Client::new(&shared_config);
