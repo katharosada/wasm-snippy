@@ -1,5 +1,5 @@
 
-console.log("Hello world!")
+console.log("Hello YOW Brisbane!")
 console.log(Math.random().toString())
-console.log("rock")
+console.log("scissors")
 

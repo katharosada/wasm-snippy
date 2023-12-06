@@ -23,3 +23,12 @@ INSERT INTO bots (name, run_type, script_contents, wasm_path, is_builtin) VALUES
 
 -- Add colum to bots table for disabling bots
 ALTER TABLE bots ADD is_disabled BOOLEAN NOT NULL DEFAULT FALSE;
+
+-- Add new table for tournament outcomes
+DROP TABLE IF EXISTS tournaments;
+CREATE TABLE tournaments (
+    id SERIAL PRIMARY KEY,
+    created_at TIMESTAMP NOT NULL DEFAULT NOW(),
+    winner_id INTEGER REFERENCES bots(id)
+);
+GRANT ALL PRIVILEGES ON TABLE tournaments TO snippyuser;

@@ -35,3 +35,14 @@ export interface ApiMatch {
   participants: ApiBotDetails[]
   state: 'NotStarted' | 'InProgress' | 'Bye' | 'Finished'
 }
+
+export interface ApiBotWinCount {
+  bot_name: string
+  wins: number
+  is_disabled: boolean
+  is_builtin: boolean
+}
+
+export interface ApiLeaderboard {
+  leaders_1day: ApiBotWinCount[]
+}

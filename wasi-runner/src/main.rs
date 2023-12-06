@@ -16,7 +16,7 @@ use tower_http::{
     services::ServeDir,
     trace::{DefaultMakeSpan, TraceLayer},
 };
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 
 use tokio::sync::RwLock;
 use tokio::sync::broadcast;
@@ -107,6 +107,7 @@ async fn main() {
         .route("/api/test", post(test_bot))
         .route("/api/bot", post(post_bot))
         .route("/api/upload_wasm", post(upload_wasm))
+        .route("/api/leaderboard", get(get_leaderboard))
         .with_state(shared_state.clone())
         .layer(
             TraceLayer::new_for_http()
@@ -138,7 +139,6 @@ async fn main() {
         }
     }
 }
-
 
 async fn start_background_tournaments(shared_state: Arc<SharedState>) -> Result<()> {
     let mut stream = IntervalStream::new(time::interval(Duration::from_secs(TOURNAMENT_INTERVAL)));
@@ -372,6 +372,59 @@ async fn upload_wasm (
         }
         Ok(_) => {
             return (StatusCode::BAD_REQUEST, Json("Bot name is already in use.")).into_response();
+        },
+        Err(e) => {
+            println!("Error: {}", e);
+            return (StatusCode::INTERNAL_SERVER_ERROR, Json("Unexpected error occurred".to_string())).into_response();
+        }
+    }
+}
+
+#[derive(Serialize)]
+struct BotWinCount {
+    bot_name: String,
+    wins: i64,
+    is_disabled: bool,
+    is_builtin: bool,
+}
+
+#[derive(Serialize)]
+struct TournamentResults {
+    leaders_1day: Vec<BotWinCount>
+}
+
+
+async fn get_leaderboard(State(shared_state): State<Arc<SharedState>>,) -> Response {
+    let conn = shared_state.db_pool.get().await.unwrap();
+
+    let statement = "SELECT b.name, count(t.winner_id), b.is_disabled, b.is_builtin \
+        FROM bots AS b LEFT OUTER JOIN tournaments AS t \
+        ON t.winner_id = b.id \
+        WHERE t.created_at > NOW() - INTERVAL '1 day' \
+        GROUP BY b.id \
+        ORDER BY count DESC \
+        LIMIT 20;";
+
+    let result = conn.query(statement, &[]).await;
+    match result {
+        Ok(rows) => {
+            let mut return_struct = TournamentResults {
+                leaders_1day: Vec::new(),
+            };
+            for row in rows {
+                let bot_name: String = row.get(0);
+                let wins: i64 = row.get(1);
+                let is_disabled: bool = row.get(2);
+                let is_builtin: bool = row.get(3);
+                let bot_win_count = BotWinCount {
+                    bot_name,
+                    wins,
+                    is_disabled,
+                    is_builtin,
+                };
+                return_struct.leaders_1day.push(bot_win_count);
+            }
+            return (StatusCode::OK, Json(return_struct)).into_response();
         },
         Err(e) => {
             println!("Error: {}", e);
