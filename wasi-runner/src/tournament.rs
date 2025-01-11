@@ -30,7 +30,7 @@ use anyhow::Result;
 use crate::ConnectionPool;
 
 const STDOUT_STDERR_LIMIT: usize = 100 * 1024; // 100KiB
-const WASM_TIMEOUT_LIMIT: Duration = Duration::from_millis(200);
+const WASM_TIMEOUT_LIMIT: Duration = Duration::from_millis(1000);
 const WASM_MAX_FUEL: u64 = 1_000_000_000;
 
 struct WasiHostCtx {
@@ -305,9 +305,8 @@ async fn run_wasi_bot(bot_details: &BotDetails, input: String) -> Result<BotRunR
                 .typed::<(), ()>(&store)?;
         
             let start = Instant::now();
-            let my_duration = tokio::time::Duration::from_millis(500);
             let result = timeout(
-                my_duration,
+                WASM_TIMEOUT_LIMIT,
                 func.call_async(&mut store, ()))
                 .await;
             let duration = start.elapsed();
@@ -496,7 +495,7 @@ async fn get_bots(db_pool: &ConnectionPool, bucket_name: &String) -> Result<Vec<
     let conn = db_pool.get().await?;
     let stmt = conn.prepare("SELECT id, name, script_contents, run_type, wasm_path FROM bots WHERE is_disabled = false OR is_builtin = true").await?;
 
-    let shared_config = aws_config::load_defaults(BehaviorVersion::v2023_11_09()).await;
+    let shared_config = aws_config::load_defaults(BehaviorVersion::v2024_03_28()).await;
     let client = S3Client::new(&shared_config);
 
     let rows = conn.query(&stmt, &[]).await?;
@@ -629,7 +628,7 @@ impl Tournament {
             } else {
                 let participants = match_participants.get(&this_match.id).unwrap();
                 let match_outcome = run_match(
-                    &this_match.id, &participants[0], &participants[1], db_pool).await?;
+                    &this_match.id, &participants[0], &participants[1], db_pool, &sender).await?;
                 winner_bot = participants[match_outcome.winner as usize].clone();
                 sender.send(serde_json::to_string(&match_outcome).unwrap()).unwrap();
                 self.match_updates.push(match_outcome.clone());
@@ -649,21 +648,21 @@ impl Tournament {
     }
 }
 
-async fn run_match(match_id: &String, bot1: &BotDetails, bot2: &BotDetails, db_pool: &ConnectionPool) -> Result<MatchOutcome> {
+async fn run_match(match_id: &String, bot1: &BotDetails, bot2: &BotDetails, db_pool: &ConnectionPool, sender: &Sender<String>) -> Result<MatchOutcome> {
     let match_id = match_id.clone();
     let bot1 = bot1.clone();
     let bot2 = bot2.clone();
 
-
-
     let mut bot1_moves: Vec<SPROption> = vec![];
     let mut bot2_moves: Vec<SPROption> = vec![];
 
+    let mut bot1_wins = 0;
+    let mut bot2_wins = 0;
+
     let mut winner_bot: Option<usize> = None;
     for _i in 0..5 {
-        // TODO: Generate stdin input and stop using the test function.
         let bot1_result = run_bot(&bot1, &bot2.name,&bot1_moves).await?;
-        let bot2_result = run_bot(&bot2, &bot1.name, &bot1_moves).await?;
+        let bot2_result = run_bot(&bot2, &bot1.name, &bot2_moves).await?;
         let bot1_play = bot1_result.result;
         let bot2_play = bot2_result.result;
         bot1_moves.push(bot1_play.clone());
@@ -677,12 +676,48 @@ async fn run_match(match_id: &String, bot1: &BotDetails, bot2: &BotDetails, db_p
         } else if bot1_play == SPROption::Invalid {
             winner_bot = Some(1);
             break
-        } else if bot1_play.beats(&bot2_play) {
+        } else if bot2_play == SPROption::Invalid {
             winner_bot = Some(0);
-            break
+            break;
+        } else if bot1_play.beats(&bot2_play) {
+            bot1_wins += 1;
+            if bot1_wins >= 3 {
+                break;
+            }
         } else {
-            winner_bot = Some(1);
-            break
+            bot2_wins += 1;
+            if bot2_wins >= 3 {
+                break;
+            }
+        }
+
+        let participant_outcomes = vec![
+            ParticipantOutcome {
+                name: bot1.name.clone(),
+                moves: bot1_moves.clone(),
+                winner: false
+            },
+            ParticipantOutcome {
+                name: bot2.name.clone(),
+                moves: bot2_moves.clone(),
+                winner: false
+            }
+        ];
+        let in_progress_match_out = MatchOutcome {
+            match_id: match_id.clone(),
+            state: MatchState::InProgress,
+            winner: 0,
+            note: None,
+            participants: participant_outcomes.clone()
+        };
+        sender.send(serde_json::to_string(&in_progress_match_out).unwrap()).unwrap();
+    }
+
+    if winner_bot == None {
+        if bot1_wins > bot2_wins {
+            winner_bot = Some(0)
+        } else if bot2_wins > bot1_wins {
+            winner_bot = Some(1)
         }
     }
 
@@ -813,7 +848,7 @@ async fn disable_bot(bot_id: Option<i32>, db_pool: &ConnectionPool) -> Result<u6
 }
 
 async fn save_bot_code(bucket_name: &String, bytes: Vec<u8>) -> Result<String> {
-    let shared_config = aws_config::load_defaults(BehaviorVersion::v2023_11_09()).await;
+    let shared_config = aws_config::load_defaults(BehaviorVersion::v2024_03_28()).await;
     let client = S3Client::new(&shared_config);
   
     let objects = client.list_objects_v2().bucket(bucket_name).send().await?;
