@@ -30,6 +30,7 @@ tower = { version = "0.4", features = ["util"] }
 tower-http = { version = "0.4.0", features = ["fs", "trace"] }
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
-wasi-common = "14.0.4"
-wasmtime = { version = "14.0.4", features = ["async"] }
-wasmtime-wasi = "14.0.4"
+wasi-preview1-component-adapter-provider = "28.0.0"
+wasmtime = { version = "28.0.0", features = ["async"] }
+wasmtime-wasi = "28.0.0"
+wit-component = "0.223.0"

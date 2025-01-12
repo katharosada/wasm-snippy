@@ -2,38 +2,39 @@ use std::env;
 use std::sync::Arc;
 
 use axum::{
+    body::Bytes,
     extract::{
         ws::{Message, WebSocket, WebSocketUpgrade},
-        State,
-        Multipart,
+        Multipart, State,
     },
+    http::StatusCode,
     response::{IntoResponse, Response},
     routing::{get, post},
-    Router, http::StatusCode, Json, body::Bytes,
+    Json, Router,
 };
-use std::{net::SocketAddr, path::PathBuf, fs, time::Duration};
+use serde::Deserialize;
+use std::{fs, net::SocketAddr, path::PathBuf, time::Duration};
 use tower_http::{
     services::ServeDir,
     trace::{DefaultMakeSpan, TraceLayer},
 };
-use serde::Deserialize;
 
-use tokio::sync::RwLock;
 use tokio::sync::broadcast;
+use tokio::sync::RwLock;
 use tokio::time;
-use tokio_stream::wrappers::IntervalStream;
 use tokio_postgres::NoTls;
+use tokio_stream::wrappers::IntervalStream;
 
 use anyhow::Result;
 
 //allows to split the websocket stream into separate TX and RX branches
-use futures::{sink::SinkExt, stream::StreamExt};
-use native_tls::{TlsConnector, Certificate};
-use postgres_native_tls::MakeTlsConnector;
 use deadpool_postgres::{Config, ManagerConfig, Pool, RecyclingMethod, Runtime};
 use dotenvy::dotenv;
+use futures::{sink::SinkExt, stream::StreamExt};
+use native_tls::{Certificate, TlsConnector};
+use postgres_native_tls::MakeTlsConnector;
 
-use tournament::{BotDetails, BotRunType, Tournament, SPROption};
+use tournament::{BotDetails, BotRunType, SPROption, Tournament};
 
 mod tournament;
 
@@ -56,7 +57,10 @@ async fn main() {
     let assets_dir: PathBuf = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("assets");
 
     let db_host = env::var("DB_HOST").unwrap_or("localhost".to_string());
-    let db_port: u16 = env::var("DB_PORT").unwrap_or("5432".to_string()).parse().expect("DB_PORT must be a valid integer.");
+    let db_port: u16 = env::var("DB_PORT")
+        .unwrap_or("5432".to_string())
+        .parse()
+        .expect("DB_PORT must be a valid integer.");
     let db_name = env::var("DB_NAME").unwrap_or("snippy".to_string());
     let db_user = env::var("DB_USER").unwrap_or("snippyuser".to_string());
     let db_password = env::var("DB_PASSWORD").unwrap_or("".to_string());
@@ -68,21 +72,27 @@ async fn main() {
     config.dbname = Some(db_name);
     config.user = Some(db_user);
     config.password = Some(db_password);
-    config.manager = Some(ManagerConfig { recycling_method: RecyclingMethod::Fast });
+    config.manager = Some(ManagerConfig {
+        recycling_method: RecyclingMethod::Fast,
+    });
 
-    let database_cert_path = env::var("DATABASE_CERT_PATH").unwrap_or("database_cert.pem".to_string());
+    let database_cert_path =
+        env::var("DATABASE_CERT_PATH").unwrap_or("database_cert.pem".to_string());
 
-    let cert_read= fs::read(&database_cert_path);
-    let db_pool: ConnectionPool  = match cert_read {
+    let cert_read = fs::read(&database_cert_path);
+    let db_pool: ConnectionPool = match cert_read {
         Ok(cert) => {
             let cert = Certificate::from_pem(&cert).expect("Reading certificate failed.");
             let connector = TlsConnector::builder()
                 .add_root_certificate(cert)
                 .danger_accept_invalid_hostnames(true)
-                .build().expect("Failed to build TLS connector.");
+                .build()
+                .expect("Failed to build TLS connector.");
             let connector = MakeTlsConnector::new(connector);
-            config.create_pool(Some(Runtime::Tokio1), connector).unwrap()
-        },
+            config
+                .create_pool(Some(Runtime::Tokio1), connector)
+                .unwrap()
+        }
         Err(e) => {
             println!("Warning: Cannot read database certificate at path {} ({}). Defaulting to not using TLS.", database_cert_path, e);
             config.create_pool(Some(Runtime::Tokio1), NoTls).unwrap()
@@ -139,32 +149,33 @@ async fn main() {
     }
 }
 
-
 async fn start_background_tournaments(shared_state: Arc<SharedState>) -> Result<()> {
     let mut stream = IntervalStream::new(time::interval(Duration::from_secs(TOURNAMENT_INTERVAL)));
 
     while let Some(_ts) = stream.next().await {
         println!("Starting new tournament.");
-        let result = tournament::create_tournament(&shared_state.db_pool, &shared_state.bucket_name).await;
+        let result =
+            tournament::create_tournament(&shared_state.db_pool, &shared_state.bucket_name).await;
         match result {
             Ok(payload) => {
                 let mut tournament = shared_state.tournament.write().await;
                 let tournament_json = serde_json::to_string(&payload.clone()).unwrap();
-                shared_state.broadcast_channel.send(tournament_json).unwrap();
+                shared_state
+                    .broadcast_channel
+                    .send(tournament_json)
+                    .unwrap();
                 *tournament = payload;
 
                 let sender = shared_state.broadcast_channel.clone();
                 let result2 = (*tournament).run(sender, &shared_state.db_pool).await;
                 match result2 {
-                    Ok(_) => {},
-                    Err(e) => {
-                        return Err(e.into())
-                    }
+                    Ok(_) => {}
+                    Err(e) => return Err(e.into()),
                 }
             }
             Err(e) => {
                 println!("Error: {}", e);
-                return Err(e.into())
+                return Err(e.into());
             }
         }
         println!("Tournament done.");
@@ -188,7 +199,10 @@ struct CreateBotRequest {
     run_type: BotRunType,
 }
 
-async fn post_bot(State(shared_state): State<Arc<SharedState>>, Json(payload): Json<CreateBotRequest>) -> Response {
+async fn post_bot(
+    State(shared_state): State<Arc<SharedState>>,
+    Json(payload): Json<CreateBotRequest>,
+) -> Response {
     let botname = payload.name;
     let botcode = payload.botcode;
 
@@ -202,21 +216,35 @@ async fn post_bot(State(shared_state): State<Arc<SharedState>>, Json(payload): J
     };
 
     if botname.len() > 30 {
-        return (StatusCode::BAD_REQUEST, Json("Bot name is limited to 30 characters.")).into_response();
+        return (
+            StatusCode::BAD_REQUEST,
+            Json("Bot name is limited to 30 characters."),
+        )
+            .into_response();
     }
     if botname.len() == 0 {
         return (StatusCode::BAD_REQUEST, Json("Bot name cannot be empty.")).into_response();
     }
 
-    let result = tournament::add_bot(&shared_state.db_pool, &shared_state.bucket_name, &mut bot, true).await;
+    let result = tournament::add_bot(
+        &shared_state.db_pool,
+        &shared_state.bucket_name,
+        &mut bot,
+        true,
+    )
+    .await;
     return match result {
         Ok(1) => (StatusCode::OK, Json("success!")).into_response(),
         Ok(_) => (StatusCode::BAD_REQUEST, Json("Bot name is already in use.")).into_response(),
         Err(e) => {
             println!("Error: {}", e);
-            return (StatusCode::INTERNAL_SERVER_ERROR, Json("Unexpected error occurred".to_string())).into_response();
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json("Unexpected error occurred".to_string()),
+            )
+                .into_response();
         }
-    }
+    };
 }
 
 #[derive(Deserialize)]
@@ -243,7 +271,11 @@ async fn test_bot(Json(payload): Json<TestBotRequest>) -> Response {
         Ok(payload) => (StatusCode::OK, Json(payload)).into_response(),
         Err(e) => {
             println!("Error: {}", e);
-            return (StatusCode::INTERNAL_SERVER_ERROR, Json("Unexpected error occurred".to_string())).into_response();
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json("Unexpected error occurred".to_string()),
+            )
+                .into_response();
         }
     }
 }
@@ -265,7 +297,7 @@ async fn handle_socket(socket: WebSocket, state: Arc<SharedState>) {
 
     // Start recieveing updates
     let mut update_reciever = state.broadcast_channel.subscribe();
-    
+
     let tournament_json = match serde_json::to_string(&state.tournament.read().await.clone()) {
         Ok(json) => json,
         Err(e) => {
@@ -301,20 +333,19 @@ async fn handle_socket(socket: WebSocket, state: Arc<SharedState>) {
                 Err(e) => {
                     println!("Error: {}", e);
                     break;
-                },
+                }
                 _ => continue,
             };
         }
     });
-   
+
     tokio::select! {
         _ = (&mut send_task) => recv_task.abort(),
         _ = (&mut recv_task) => send_task.abort(),
     };
 }
 
-
-async fn upload_wasm (
+async fn upload_wasm(
     State(shared_state): State<Arc<SharedState>>,
     mut form_data: Multipart,
 ) -> Response {
@@ -335,7 +366,7 @@ async fn upload_wasm (
     if botname.is_empty() {
         return (StatusCode::BAD_REQUEST, Json("No bot name provided.")).into_response();
     }
-    
+
     let data_vec: Vec<u8> = data.to_vec();
 
     println!("File upload size: {}", data.len());
@@ -354,28 +385,49 @@ async fn upload_wasm (
         Ok(payload) => payload,
         Err(e) => {
             println!("Error: {}", e);
-            return (StatusCode::INTERNAL_SERVER_ERROR, Json("Unexpected error occurred".to_string())).into_response();
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json("Unexpected error occurred".to_string()),
+            )
+                .into_response();
         }
     };
 
     match bot_run_result.result {
         SPROption::Invalid => {
-            let reason = bot_run_result.invalid_reason.unwrap_or("Unknown reason".to_string());
-            return (StatusCode::BAD_REQUEST, Json(format!("Bot did not pass a test run. {}", reason))).into_response();
-        },
-        _ => ()
+            let reason = bot_run_result
+                .invalid_reason
+                .unwrap_or("Unknown reason".to_string());
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(format!("Bot did not pass a test run. {}", reason)),
+            )
+                .into_response();
+        }
+        _ => (),
     }
 
-    match tournament::add_bot(&shared_state.db_pool, &shared_state.bucket_name, &mut bot, false).await {
+    match tournament::add_bot(
+        &shared_state.db_pool,
+        &shared_state.bucket_name,
+        &mut bot,
+        false,
+    )
+    .await
+    {
         Ok(1) => {
             return (StatusCode::OK, Json("success!")).into_response();
         }
         Ok(_) => {
             return (StatusCode::BAD_REQUEST, Json("Bot name is already in use.")).into_response();
-        },
+        }
         Err(e) => {
             println!("Error: {}", e);
-            return (StatusCode::INTERNAL_SERVER_ERROR, Json("Unexpected error occurred".to_string())).into_response();
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json("Unexpected error occurred".to_string()),
+            )
+                .into_response();
         }
     }
 }
