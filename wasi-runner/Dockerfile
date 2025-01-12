@@ -1,4 +1,4 @@
-FROM rust:alpine3.17 AS builder
+FROM rust:1.84.0-alpine AS builder
 
 RUN apk add libressl-dev musl-dev
 
@@ -6,7 +6,7 @@ WORKDIR /app
 COPY ./ .
 RUN cargo build --release
 
-FROM alpine:3.17
+FROM alpine:3.20
 EXPOSE 3001
 WORKDIR /app
 COPY --from=builder /app/database_cert.pem ./
