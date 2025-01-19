@@ -10,27 +10,27 @@ You'll need to install a Rust toolchain. See [Installing Rust and Cargo](https:/
 
 Install dependencies & build
 ```
-$ rustup target add wasm32-wasi
-$ cargo build --target wasm32-wasi
+$ rustup target add wasm32-wasip1
+$ cargo build --target wasm32-wasip1
 ```
 
 Install Wasmtime. See: [Wasmtime installation instructions](https://docs.wasmtime.dev/cli-install.html).
 
 Test using `wasmtime` CLI:
 ```
-$ wasmtime target/wasm32-wasi/debug/rust-snippy-bot.wasm
+$ wasmtime target/wasm32-wasip1/debug/rust-snippy-bot.wasm
 ```
 
 If the program needs input, pass in the json data through stdin:
 ```
-$ echo '{"botname": "MyBot", "opponent": "RandomBot"}' | wasmtime target/wasm32-wasi/debug/rust-snippy-bot.wasm
+$ echo '{"botname": "MyBot", "opponent": "RandomBot"}' | wasmtime target/wasm32-wasip1/debug/rust-snippy-bot.wasm
 ```
 
 ## Submitting the bot
 
 Build a release version:
 ```
-$ cargo build --target wasm32-wasi --release
+$ cargo build --target wasm32-wasip1 --release
 ```
 
-Find the release build in `target/wasm32-wasi/release/rust-snippy-bot.wasm` to upload to the tournament.
+Find the release build in `target/wasm32-wasip1/release/rust-snippy-bot.wasm` to upload to the tournament.
