@@ -193,7 +193,7 @@ pub async fn run_bot(
     bot_details: &BotDetails,
     opponent_name: &String,
     history: &Vec<SPROption>,
-) -> Result<BotRunResult> {
+) -> BotRunResult {
     let input = generate_stdin_input(&bot_details.name, opponent_name, &history);
 
     match bot_details.run_type {
@@ -206,7 +206,7 @@ pub async fn run_bot(
     }
 }
 
-pub async fn test_bot(bot_details: &BotDetails, stdin: Option<String>) -> Result<BotRunResult> {
+pub async fn test_bot(bot_details: &BotDetails, stdin: Option<String>) -> BotRunResult {
     let bot_details = bot_details.clone();
     let input = match stdin {
         Some(stdin) => stdin,
@@ -234,7 +234,7 @@ pub async fn add_bot(
     test: bool,
 ) -> Result<u64> {
     if test {
-        test_bot(&bot_details, None).await?;
+        test_bot(&bot_details, None).await;
     }
 
     let wasm_path = match bot_details.wasm_bytes.clone() {
@@ -278,33 +278,33 @@ fn load_wasi_preview1_module_as_component(engine: &Engine, bytes: &[u8]) -> Resu
     return Component::from_binary(&engine, &component_bytes);
 }
 
-async fn run_wasi_bot(bot_details: &BotDetails, input: String) -> Result<BotRunResult> {
+async fn run_wasi_bot(bot_details: &BotDetails, input: String) -> BotRunResult {
     println!("Running WASI bot, path: {}", bot_details.wasm_path);
     let args: &[String] = &["wasmbot".to_string()];
     let component = match bot_details.wasm_bytes.clone() {
         None => {
             println!("Error loading module: No wasm bytes found");
-            return Ok(BotRunResult {
+            return BotRunResult {
                 stdin: input,
                 stdout: "".to_string(),
                 stderr: "".to_string(),
                 duration: 0.0,
                 result: SPROption::Invalid,
                 invalid_reason: Some("Error loading wasm module".to_string()),
-            });
+            };
         }
         Some(bytes) => match load_wasi_preview1_module_as_component(&WASM_RUNTIME.engine, &bytes) {
             Ok(component) => component,
             Err(e) => {
                 println!("Error loading module: {}", e);
-                return Ok(BotRunResult {
+                return BotRunResult {
                     stdin: input,
                     stdout: "".to_string(),
                     stderr: "".to_string(),
                     duration: 0.0,
                     result: SPROption::Invalid,
                     invalid_reason: Some("Error loading wasm module".to_string()),
-                });
+                };
             }
         },
     };
@@ -329,13 +329,25 @@ fn extract_result_from_stdout(stdout: &String) -> SPROption {
     }
 }
 
-async fn run_python_bot(bot_details: &BotDetails, input: String) -> Result<BotRunResult> {
+async fn run_python_bot(bot_details: &BotDetails, input: String) -> BotRunResult {
     let args: &[String] = &["python".to_string(), "main.py".to_string()];
 
     let temp_dir_path = env::temp_dir();
     let main_py_path = temp_dir_path.join("main.py");
-    fs::write(main_py_path, bot_details.code.as_bytes())?;
-
+    match fs::write(main_py_path, bot_details.code.as_bytes()) {
+        Ok(_) => {}
+        Err(e) => {
+            let message = format!("Could write main.py to disk. Error: {}", e);
+            return BotRunResult {
+                stdin: input.clone(),
+                stdout: "".to_string(),
+                stderr: "".to_string(),
+                duration: 0.0,
+                result: SPROption::Invalid,
+                invalid_reason: Some(message),
+            };
+        }
+    };
     run_bot_component(
         &WASM_RUNTIME.python_component,
         args,
@@ -350,7 +362,7 @@ async fn run_bot_component(
     args: &[String],
     input: String,
     temp_dir_path: Option<PathBuf>,
-) -> Result<BotRunResult> {
+) -> BotRunResult {
     let stdin: MemoryInputPipe = MemoryInputPipe::new(input.clone());
     let stdout = MemoryOutputPipe::new(STDOUT_STDERR_LIMIT);
     let stderr = MemoryOutputPipe::new(STDOUT_STDERR_LIMIT);
@@ -363,9 +375,23 @@ async fn run_bot_component(
         .stderr(stderr.clone());
 
     let wasi = match temp_dir_path {
-        Some(path) => wasi_ctx_builder
-            .preopened_dir(path, "/", DirPerms::READ, FilePerms::READ)?
-            .build(),
+        Some(path) => {
+            let result = wasi_ctx_builder.preopened_dir(path, "/", DirPerms::READ, FilePerms::READ);
+            match result {
+                Ok(builder) => builder.build(),
+                Err(e) => {
+                    let message = format!("Could not set up preopened directory. Error: {}", e);
+                    return BotRunResult {
+                        stdin: input.clone(),
+                        stdout: "".to_string(),
+                        stderr: "".to_string(),
+                        duration: 0.0,
+                        result: SPROption::Invalid,
+                        invalid_reason: Some(message),
+                    };
+                }
+            }
+        }
         None => wasi_ctx_builder.build(),
     };
 
@@ -383,10 +409,37 @@ async fn run_bot_component(
 
     let mut store = Store::new(&WASM_RUNTIME.engine, state);
     store.limiter(|state| &mut state.limits);
-    store.set_fuel(WASM_MAX_FUEL)?;
+    match store.set_fuel(WASM_MAX_FUEL) {
+        Ok(_) => {}
+        Err(e) => {
+            let message = format!("Could not set fuel. Error: {}", e);
+            return BotRunResult {
+                stdin: input.clone(),
+                stdout: "".to_string(),
+                stderr: "".to_string(),
+                duration: 0.0,
+                result: SPROption::Invalid,
+                invalid_reason: Some(message),
+            };
+        }
+    };
 
     let start = Instant::now();
-    let command = Command::instantiate_async(&mut store, component, &WASM_RUNTIME.linker).await?;
+    let command =
+        match Command::instantiate_async(&mut store, component, &WASM_RUNTIME.linker).await {
+            Ok(c) => c,
+            Err(e) => {
+                let message = format!("Could not instantiate Wasm component. Error: {}", e);
+                return BotRunResult {
+                    stdin: input.clone(),
+                    stdout: "".to_string(),
+                    stderr: "".to_string(),
+                    duration: 0.0,
+                    result: SPROption::Invalid,
+                    invalid_reason: Some(message),
+                };
+            }
+        };
 
     let result = timeout(
         WASM_TIMEOUT_LIMIT,
@@ -410,38 +463,38 @@ async fn run_bot_component(
                     "Program ran out of fuel: It reached the limit of {} wasm instructions.",
                     WASM_MAX_FUEL
                 );
-                return Ok(BotRunResult {
+                return BotRunResult {
                     stdin: input.clone(),
                     stdout: stdout_str,
                     stderr: stderr_str,
                     duration: duration.as_secs_f32(),
                     result: SPROption::Invalid,
                     invalid_reason: Some(message),
-                });
+                };
             }
             println!("Runtime error: {}", e);
-            return Ok(BotRunResult {
+            return BotRunResult {
                 stdin: input.clone(),
                 stdout: stdout_str,
                 stderr: stderr_str,
                 duration: duration.as_secs_f32(),
                 result: SPROption::Invalid,
                 invalid_reason: Some("Program did not exit successfully.".to_string()),
-            });
+            };
         }
         Err(_) => {
             let nice_message = format!(
                 "Timeout! Bots are limited to {}ms",
                 WASM_TIMEOUT_LIMIT.as_millis()
             );
-            return Ok(BotRunResult {
+            return BotRunResult {
                 stdin: input.clone(),
                 stdout: stdout_str,
                 stderr: stderr_str,
                 duration: duration.as_secs_f32(),
                 result: SPROption::Invalid,
                 invalid_reason: Some(nice_message),
-            });
+            };
         }
     };
 
@@ -452,14 +505,14 @@ async fn run_bot_component(
         }
         _ => None,
     };
-    return Ok(BotRunResult {
+    return BotRunResult {
         stdin: input.clone(),
         stdout: stdout_str,
         stderr: stderr_str,
         duration: duration.as_secs_f32(),
         result: bot_result,
         invalid_reason: invalid_reason,
-    });
+    };
 }
 
 async fn get_bots(db_pool: &ConnectionPool, bucket_name: &String) -> Result<Vec<BotDetails>> {
@@ -664,8 +717,8 @@ async fn run_match(
 
     let mut winner_bot: Option<usize> = None;
     for _i in 0..5 {
-        let bot1_result = run_bot(&bot1, &bot2.name, &bot1_moves).await?;
-        let bot2_result = run_bot(&bot2, &bot1.name, &bot2_moves).await?;
+        let bot1_result = run_bot(&bot1, &bot2.name, &bot1_moves).await;
+        let bot2_result = run_bot(&bot2, &bot1.name, &bot2_moves).await;
         let bot1_play = bot1_result.result;
         let bot2_play = bot2_result.result;
         bot1_moves.push(bot1_play.clone());
@@ -677,9 +730,11 @@ async fn run_match(
             }
             continue;
         } else if bot1_play == SPROption::Invalid {
+            println!("Invalid move: {:?}", bot1_result.invalid_reason);
             winner_bot = Some(1);
             break;
         } else if bot2_play == SPROption::Invalid {
+            println!("Invalid move: {:?}", bot2_result.invalid_reason);
             winner_bot = Some(0);
             break;
         } else if bot1_play.beats(&bot2_play) {
@@ -739,7 +794,9 @@ async fn run_match(
     };
 
     // Check for invalid moves
-    let is_bot1_invalid = bot1_moves.iter().any(|m| *m == SPROption::Invalid);
+    let is_bot1_invalid = bot1_moves
+        .iter()
+        .any(|m: &SPROption| *m == SPROption::Invalid);
 
     if is_bot1_invalid {
         disable_bot(bot1.id, db_pool).await?;

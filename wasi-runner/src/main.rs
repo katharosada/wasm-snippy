@@ -267,17 +267,7 @@ async fn test_bot(Json(payload): Json<TestBotRequest>) -> Response {
     };
 
     let result = tournament::test_bot(&bot, payload.stdin).await;
-    match result {
-        Ok(payload) => (StatusCode::OK, Json(payload)).into_response(),
-        Err(e) => {
-            println!("Error: {}", e);
-            return (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                Json("Unexpected error occurred".to_string()),
-            )
-                .into_response();
-        }
-    }
+    return (StatusCode::OK, Json(result)).into_response();
 }
 
 async fn ws_handler(
@@ -380,19 +370,7 @@ async fn upload_wasm(
         wasm_bytes: Some(data_vec),
     };
 
-    let result = tournament::test_bot(&bot, None).await;
-    let bot_run_result = match result {
-        Ok(payload) => payload,
-        Err(e) => {
-            println!("Error: {}", e);
-            return (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                Json("Unexpected error occurred".to_string()),
-            )
-                .into_response();
-        }
-    };
-
+    let bot_run_result = tournament::test_bot(&bot, None).await;
     match bot_run_result.result {
         SPROption::Invalid => {
             let reason = bot_run_result
