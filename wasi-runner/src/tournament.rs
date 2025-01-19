@@ -21,6 +21,8 @@ use tokio::time::timeout;
 use wasi_preview1_component_adapter_provider::WASI_SNAPSHOT_PREVIEW1_ADAPTER_NAME;
 use wasi_preview1_component_adapter_provider::WASI_SNAPSHOT_PREVIEW1_COMMAND_ADAPTER;
 use wasmtime::component::{Component, Linker, ResourceTable};
+use wasmtime::StoreLimits;
+use wasmtime::StoreLimitsBuilder;
 use wasmtime::{Config, Engine, Store};
 use wasmtime_wasi::bindings::Command;
 use wasmtime_wasi::pipe::MemoryInputPipe;
@@ -34,11 +36,9 @@ const WASM_TIMEOUT_LIMIT: Duration = Duration::from_millis(1000);
 const WASM_MAX_FUEL: u64 = 1_000_000_000;
 
 pub struct ComponentRunStates {
-    // These two are required basically as a standard way to enable the impl of WasiView
-    // impl of WasiView is required by [`wasmtime_wasi::add_to_linker_sync`]
     pub wasi_ctx: WasiCtx,
     pub resource_table: ResourceTable,
-    // You can add other custom host states if needed
+    limits: StoreLimits,
 }
 
 impl WasiView for ComponentRunStates {
@@ -372,9 +372,17 @@ async fn run_bot_component(
     let state = ComponentRunStates {
         wasi_ctx: wasi,
         resource_table: ResourceTable::new(),
+        limits: StoreLimitsBuilder::new()
+            .instances(8)
+            .memories(4)
+            .memory_size(100 << 20 /* 100 MB */)
+            .tables(4)
+            .table_elements(20000)
+            .build(),
     };
 
     let mut store = Store::new(&WASM_RUNTIME.engine, state);
+    store.limiter(|state| &mut state.limits);
     store.set_fuel(WASM_MAX_FUEL)?;
 
     let start = Instant::now();
