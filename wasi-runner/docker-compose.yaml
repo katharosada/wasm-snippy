@@ -1,9 +1,0 @@
-version: "3.0.0"
-
-services:
-  wasi-runner:
-    build: .
-    environment:
-      - DATABASE_URL=
-    ports:
-      - 3001:3001
