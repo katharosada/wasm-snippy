@@ -71,3 +71,15 @@ This will start the server on port 3001, the client devserver is set up to proxy
 The server may take about 15 seconds (or more depending on your machine) to start up because it loads the wasm engine and modules before starting the http server.
 
 Check that the server is running correctly by visiting http://localhost:3001/ in the browser. If that loads, then the UI should also be able to run bots and tournaments via the API.
+
+### Use dockerized version to run locally
+
+Run:
+```sh
+docker compose -f docker-compose.yaml up
+```
+
+If there were changes after the initial build, you can rebuild the image with:
+```sh
+docker compose -f docker-compose.yaml up --build
+```

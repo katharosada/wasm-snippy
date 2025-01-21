@@ -4,8 +4,9 @@ FROM node:latest AS builder
 WORKDIR /app
 COPY ./ .
 
-RUN npm install
-RUN npm run build
+RUN corepack enable
+RUN yarn install
+RUN yarn build
 
 # Nginx stage
 FROM nginx:latest

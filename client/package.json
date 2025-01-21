@@ -6,7 +6,6 @@
   "dependencies": {
     "@emotion/react": "^11.11.1",
     "@emotion/styled": "^11.11.0",
-    "react-tournament-brackets": "^1.0.40",
     "@mui/icons-material": "^5.14.18",
     "@mui/material": "^5.14.18",
     "@types/jest": "^29.5.8",
@@ -17,6 +16,8 @@
     "react": "^18.2.0",
     "react-dom": "^18.2.0",
     "react-router-dom": "^6.19.0",
+    "react-svg-pan-zoom": "^3.13.1",
+    "react-tournament-brackets": "^1.0.40",
     "styled-components": "^6.1.14",
     "typescript": "^5.2.2",
     "web-vitals": "^2.1.4"
