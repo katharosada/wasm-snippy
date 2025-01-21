@@ -1,4 +1,7 @@
 DROP TABLE IF EXISTS bots;
+DROP USER IF EXISTS snippyuser;
+
+CREATE USER snippyuser WITH PASSWORD 'snippy123';
 
 CREATE TABLE bots (
     id SERIAL PRIMARY KEY,

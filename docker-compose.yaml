@@ -14,8 +14,10 @@ services:
     ports:
       - 3001:3001
     depends_on:
-      - snippy-db
-      - snippy-bucket
+      snippy-db:
+        condition: service_healthy
+      snippy-bucket:
+        condition: service_started
   snippy-client:
     build: client
     ports:
@@ -26,10 +28,10 @@ services:
     image: postgres:latest
     environment:
       POSTGRES_DB: snippy
-      POSTGRES_USER: snippyuser
-      POSTGRES_PASSWORD: snippy123
+      POSTGRES_USER: root
+      POSTGRES_PASSWORD: password
     healthcheck:
-      test: ["CMD-SHELL", "psql -U snippyuser -d snippy -c 'SELECT 1' || exit 1"]
+      test: ["CMD-SHELL", "psql -U root -d snippy -c 'SELECT 1' || exit 1"]
       interval: 5s
       timeout: 30s
       retries: 5
