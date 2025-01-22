@@ -1,7 +1,8 @@
 use anyhow::Result;
-use aws_config::BehaviorVersion;
+use aws_config::{BehaviorVersion, Region};
 use aws_sdk_s3::primitives::ByteStream;
 use aws_sdk_s3::Client as S3Client;
+use aws_sdk_s3::config::Credentials;
 use lazy_static::lazy_static;
 use rand::seq::SliceRandom;
 use rand::Rng;
@@ -919,7 +920,26 @@ async fn disable_bot(bot_id: Option<i32>, db_pool: &ConnectionPool) -> Result<u6
 
 async fn save_bot_code(bucket_name: &String, bytes: Vec<u8>) -> Result<String> {
     let shared_config = aws_config::load_defaults(BehaviorVersion::v2024_03_28()).await;
-    let client = S3Client::new(&shared_config);
+    let minio_root = env::var("MINIO_ROOT_USER");
+    let minio_secret = env::var("MINIO_ROOT_PASSWORD");
+
+    let client = match (minio_root, minio_secret) {
+        (Ok(minio_root), Ok(minio_secret)) => {
+            let cred = Credentials::new(minio_root, minio_secret, None, None, "loaded-from-custom-env");
+            let url = format!("http://minio:9000");
+            let s3_config = aws_sdk_s3::config::Builder::new()
+                .endpoint_url(url)
+                .credentials_provider(cred)
+                .region(Region::new("eu-central-1"))
+                .force_path_style(true) // apply bucketname as path param instead of pre-domain
+                .build();
+
+            S3Client::from_conf(s3_config)
+        }
+        _ => {
+            S3Client::new(&shared_config)
+        }
+    };
 
     let objects = client.list_objects_v2().bucket(bucket_name).send().await?;
     println!("Objects in bucket:");

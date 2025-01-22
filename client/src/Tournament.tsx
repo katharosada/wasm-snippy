@@ -1,5 +1,5 @@
 import CircularProgress from '@mui/material/CircularProgress'
-import { SingleEliminationBracket } from '@g-loot/react-tournament-brackets'
+import { SingleEliminationBracket } from 'react-tournament-brackets'
 
 import './Tournament.css'
 

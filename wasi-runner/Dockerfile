@@ -9,7 +9,6 @@ RUN cargo build --release
 FROM alpine:3.20
 EXPOSE 3001
 WORKDIR /app
-COPY --from=builder /app/database_cert.pem ./
 COPY --from=builder /app/target/release/wasi-runner ./
-COPY --from=builder /app/*.wasm ./
+COPY --from=builder /app/*.wasm /app/database_cert*.pem ./
 CMD ["./wasi-runner"]
